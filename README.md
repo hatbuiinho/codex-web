@@ -49,6 +49,29 @@ server.
 codex login --device-auth
 ```
 
+### application authentication
+
+This fork includes an application-level login layer for shared deployments. It
+uses local users, signed server-side sessions, and two roles: `member` and
+`account_admin`. The first start requires these environment variables:
+
+```bash
+CODEX_WEB_AUTH_SECRET="$(openssl rand -base64 48)"
+CODEX_WEB_BOOTSTRAP_ADMIN_EMAIL="admin@example.com"
+CODEX_WEB_BOOTSTRAP_ADMIN_PASSWORD="use-a-unique-password-with-12-or-more-characters"
+```
+
+Sign in at `/login`. An `account_admin` can open `/admin` to add users and
+change the single shared ChatGPT account with Device Auth. Account changes are
+blocked while browser clients are connected, and each change is recorded in the
+local auth database. The database path defaults to
+`/var/lib/codex-web/auth.db`; persist that directory in Docker.
+
+Application auth controls the web UI and its API. It does not make the shared
+Codex credential safe from a malicious person who can make an agent execute
+arbitrary commands in the same container. Use it only with trusted members and
+do not grant Docker or SSH access to ordinary members.
+
 ### proxying to app-server (advanced usage)
 
 it’s often useful to run the app server separately, so a crash or restart of

@@ -32,7 +32,7 @@ COPY --from=webview /app/scratch ./scratch
 COPY src ./src
 COPY vite.browser.config.ts ./
 
-RUN npm run build:browser && npm run build:server
+RUN npm run build:browser && npm run build:auth-css && npm run build:server
 
 # Install only production dependencies in a separate stage. Build tools stay
 # out of the final image even if a native module has to compile from source.

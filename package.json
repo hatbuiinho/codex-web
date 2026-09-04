@@ -10,15 +10,16 @@
   ],
   "bin": "src/server/main.js",
   "scripts": {
-    "prepare": "./scripts/prepare && npm run build:browser && npm run build:server",
-    "build": "npm run prepare:asar && npm run build:browser && npm run build:server",
+    "prepare": "./scripts/prepare && npm run build:browser && npm run build:auth-css && npm run build:server",
+    "build": "npm run prepare:asar && npm run build:browser && npm run build:auth-css && npm run build:server",
     "launch:unpacked:server": "http-server ./scratch/asar/webview -a localhost -p 5175 -c-1",
     "launch:unpacked": "NODE_ENV=development electron ./scratch/asar --remote-debugging-port=9222",
     "dev:browser": "vite --config vite.browser.config.ts",
     "build:browser": "vite build --config vite.browser.config.ts",
     "build:server": "cd src/server && tsc",
+    "build:auth-css": "tailwindcss -i ./src/server/styles/auth.css -o ./src/server/public/auth.css --minify",
     "prepare:asar": "./scripts/prepare_asar",
-    "preserver": "npm run build:server && npm run build:browser",
+    "preserver": "npm run build:server && npm run build:browser && npm run build:auth-css",
     "server": "CODEX_CLI_PATH=$(which codex) node src/server/main.js"
   },
   "repository": "git@github.com:0xcaff/codex-web.git",
@@ -42,9 +43,11 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "electron": "41.2.0",
-    "http-server": "^14.1.1"
+    "http-server": "^14.1.1",
+    "tailwindcss": "^4.3.3"
   }
 }

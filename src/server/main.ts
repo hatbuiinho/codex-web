@@ -7,6 +7,7 @@ declare global {
 }
 
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,10 +18,23 @@ import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
+import { AuthService, type AppRole, type AuthSession } from "./auth";
+import { adminPage, loginPage } from "./auth-ui";
 
 type ServerOptions = {
   host: string;
   port: number;
+};
+
+type RequestWithSession = {
+  authSession?: AuthSession;
+};
+
+type DeviceLoginJob = {
+  id: string;
+  userId: string;
+  output: string;
+  state: "running" | "succeeded" | "failed";
 };
 
 type RendererToMainMessage =
@@ -378,6 +392,222 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const app = Fastify({ logger: false });
   const websocketServer = new WebSocketServer({ noServer: true });
   const sockets = new Set<WebSocket>();
+  const auth = new AuthService();
+  const deviceLoginJobs = new Map<string, DeviceLoginJob>();
+  const failedLogins = new Map<string, { attempts: number; resetAt: number }>();
+  let activeDeviceLoginJob: DeviceLoginJob | null = null;
+
+  const bodyObject = (body: unknown): Record<string, unknown> =>
+    body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const requireAdmin = (session: AuthSession): void => {
+    if (session.role !== "account_admin") {
+      throw new Error("Administrator access is required");
+    }
+  };
+  const requireCsrf = (request: { headers: Record<string, string | string[] | undefined> }, session: AuthSession): void => {
+    const token = request.headers["x-csrf-token"];
+    if (typeof token !== "string" || token !== session.csrfToken) {
+      throw new Error("Invalid CSRF token");
+    }
+  };
+  const runCodex = async (args: string[]): Promise<{ code: number | null; output: string }> =>
+    new Promise((resolve) => {
+      const child = spawn(process.env.CODEX_AUTH_CLI_PATH ?? "codex", args, {
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "";
+      const append = (chunk: Buffer): void => {
+        output = `${output}${chunk.toString()}`.slice(-8_000);
+      };
+      child.stdout.on("data", append);
+      child.stderr.on("data", append);
+      child.on("error", (error) => resolve({ code: null, output: error.message }));
+      child.on("close", (code) => resolve({ code, output }));
+    });
+
+  app.get("/healthz", async () => ({ ok: true }));
+  app.addHook("onRequest", async (request, reply) => {
+    const pathname = new URL(request.url, "http://localhost").pathname;
+    if (
+      pathname === "/healthz" ||
+      pathname === "/login" ||
+      pathname === "/__auth/login" ||
+      pathname.startsWith("/__auth-assets/")
+    ) {
+      return;
+    }
+    const session = auth.authenticate(request.headers.cookie);
+    if (!session) {
+      if (pathname.startsWith("/__")) {
+        return reply.code(401).send({ error: "Authentication required" });
+      }
+      return reply.redirect("/login");
+    }
+    (request as typeof request & RequestWithSession).authSession = session;
+    if (
+      activeDeviceLoginJob?.state === "running" &&
+      !pathname.startsWith("/__admin/") &&
+      pathname !== "/admin"
+    ) {
+      return reply.code(503).send({ error: "Account maintenance is in progress" });
+    }
+  });
+
+  app.get("/login", async (request, reply) => {
+    if (auth.authenticate(request.headers.cookie)) {
+      return reply.redirect("/");
+    }
+    return reply.type("text/html; charset=utf-8").send(loginPage());
+  });
+
+  app.post("/__auth/login", async (request, reply) => {
+    const remoteAddress = request.ip;
+    const previous = failedLogins.get(remoteAddress);
+    if (previous && previous.resetAt > Date.now() && previous.attempts >= 10) {
+      return reply.code(429).send({ error: "Too many sign-in attempts. Try again later." });
+    }
+    if (previous && previous.resetAt <= Date.now()) {
+      failedLogins.delete(remoteAddress);
+    }
+    const body = bodyObject(request.body);
+    const email = typeof body.email === "string" ? body.email : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    const result = auth.login(email, password);
+    if (!result) {
+      const attempt = failedLogins.get(remoteAddress);
+      failedLogins.set(remoteAddress, {
+        attempts: (attempt?.attempts ?? 0) + 1,
+        resetAt: Date.now() + 15 * 60 * 1_000,
+      });
+      return reply.code(401).send({ error: "Invalid email or password" });
+    }
+    failedLogins.delete(remoteAddress);
+    return reply.header("set-cookie", auth.cookie(result.token)).send({ ok: true });
+  });
+
+  app.post("/__auth/logout", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    try {
+      requireCsrf(request, session);
+    } catch (error) {
+      return reply.code(403).send({ error: errorMessage(error) });
+    }
+    auth.logout(request.headers.cookie);
+    auth.audit(session.userId, "user.logout");
+    return reply.header("set-cookie", auth.clearCookie()).send({ ok: true });
+  });
+
+  app.get("/admin", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    if (session.role !== "account_admin") {
+      return reply.code(403).type("text/plain").send("Administrator access is required");
+    }
+    return reply.type("text/html; charset=utf-8").send(adminPage(session));
+  });
+
+  app.get("/__admin/users", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    try {
+      requireAdmin(session);
+      return { users: auth.listUsers() };
+    } catch (error) {
+      return reply.code(403).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/__admin/users", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    const body = bodyObject(request.body);
+    try {
+      requireAdmin(session);
+      requireCsrf(request, session);
+      const role: AppRole = body.role === "account_admin" ? "account_admin" : "member";
+      const user = auth.createUser(
+        typeof body.email === "string" ? body.email : "",
+        typeof body.password === "string" ? body.password : "",
+        role,
+      );
+      auth.audit(session.userId, "user.created", user.email);
+      return reply.code(201).send({ user });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/__admin/account/status", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    try {
+      requireAdmin(session);
+      const result = await runCodex(["login", "status"]);
+      return { status: result.output.trim() || `Exit code: ${result.code ?? "unknown"}` };
+    } catch (error) {
+      return reply.code(403).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/__admin/account/device-login", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    try {
+      requireAdmin(session);
+      requireCsrf(request, session);
+      if (activeDeviceLoginJob?.state === "running") {
+        throw new Error("Another Device Auth operation is already in progress");
+      }
+      if (sockets.size > 0) {
+        throw new Error("Ask all users to close Codex Web before changing the shared account");
+      }
+      const job: DeviceLoginJob = {
+        id: randomUUID(),
+        userId: session.userId,
+        output: "Starting Device Auth…\n",
+        state: "running",
+      };
+      deviceLoginJobs.set(job.id, job);
+      activeDeviceLoginJob = job;
+      auth.audit(session.userId, "codex_account.device_auth_started");
+      const child = spawn(process.env.CODEX_AUTH_CLI_PATH ?? "codex", ["login", "--device-auth"], {
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const append = (chunk: Buffer): void => {
+        job.output = `${job.output}${chunk.toString()}`.slice(-8_000);
+      };
+      child.stdout.on("data", append);
+      child.stderr.on("data", append);
+      child.on("error", (error) => {
+        job.output += `\n${error.message}`;
+        job.state = "failed";
+        auth.audit(session.userId, "codex_account.device_auth_failed", error.message);
+      });
+      child.on("close", (code) => {
+        job.state = code === 0 ? "succeeded" : "failed";
+        auth.audit(
+          session.userId,
+          job.state === "succeeded" ? "codex_account.device_auth_succeeded" : "codex_account.device_auth_failed",
+          `exit=${code ?? "unknown"}`,
+        );
+      });
+      return reply.code(202).send({ id: job.id });
+    } catch (error) {
+      return reply.code(409).send({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/__admin/account/device-login/:id", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    try {
+      requireAdmin(session);
+      const id = (request.params as { id?: string }).id;
+      const job = id ? deviceLoginJobs.get(id) : undefined;
+      if (!job || job.userId !== session.userId) {
+        return reply.code(404).send({ error: "Device Auth operation not found" });
+      }
+      return { id: job.id, state: job.state, output: job.output };
+    } catch (error) {
+      return reply.code(403).send({ error: errorMessage(error) });
+    }
+  });
 
   await app.register(fastifyMultipart, {
     limits: {
@@ -416,6 +646,12 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
 
   await app.register(fastifyStatic, {
+    root: path.resolve(__dirname, "public"),
+    prefix: "/__auth-assets/",
+    decorateReply: false,
+  });
+
+  await app.register(fastifyStatic, {
     root: "/",
     prefix: "/@fs/",
     decorateReply: false,
@@ -446,6 +682,31 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     const host = request.headers.host ?? "localhost";
     const url = new URL(requestUrl, `http://${host}`);
     if (url.pathname !== "/__backend/ipc") {
+      socket.destroy();
+      return;
+    }
+
+    const origin = request.headers.origin;
+    try {
+      if (!origin || new URL(origin).host !== host) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    } catch {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    if (!auth.authenticate(request.headers.cookie)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    if (activeDeviceLoginJob?.state === "running") {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
