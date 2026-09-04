@@ -1,0 +1,38 @@
+services:
+  codex-web:
+    image: codex-web:${CODEX_WEB_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22.14.0}
+        CODEX_VERSION: ${CODEX_VERSION:-0.153.2}
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      CODEX_HOME: /home/node/.codex
+      CODEX_WEB_AUTH_DB: /var/lib/codex-web/auth.db
+      CODEX_WEB_AUTH_SECRET: ${CODEX_WEB_AUTH_SECRET:?Set CODEX_WEB_AUTH_SECRET in .env}
+      CODEX_WEB_AUTH_COOKIE_SECURE: "true"
+      CODEX_WEB_BOOTSTRAP_ADMIN_EMAIL: ${CODEX_WEB_BOOTSTRAP_ADMIN_EMAIL:?Set CODEX_WEB_BOOTSTRAP_ADMIN_EMAIL in .env}
+      CODEX_WEB_BOOTSTRAP_ADMIN_PASSWORD: ${CODEX_WEB_BOOTSTRAP_ADMIN_PASSWORD:?Set CODEX_WEB_BOOTSTRAP_ADMIN_PASSWORD in .env}
+    volumes:
+      - codex_home:/home/node/.codex
+      - codex_web_data:/var/lib/codex-web
+      - ${CODEX_WORKSPACE_PATH:-.}:/workspace
+    expose:
+      - "8214"
+    networks:
+      nginx_network:
+        aliases:
+          - codex-web
+
+volumes:
+  codex_home:
+  codex_web_data:
+
+networks:
+  nginx_network:
+    external: true
+    name: nginx_network
