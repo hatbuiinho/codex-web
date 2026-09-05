@@ -42,12 +42,13 @@ then open <http://127.0.0.1:8214> in a browser.
 
 ### sign in
 
-ensure the codex cli on the host machine is signed in before starting the
-server.
+The Docker image installs Codex CLI inside the container; no Codex CLI is
+required on the host. An `account_admin` can sign in or replace the one shared
+ChatGPT account from `/admin` using Device Auth. The credential is kept in the
+`codex_home` Docker volume, not on the host filesystem.
 
-```bash
-codex login --device-auth
-```
+To pin the CLI version managed by Docker, set `CODEX_VERSION` in `.env` before
+building the image.
 
 ### application authentication
 
@@ -71,6 +72,10 @@ Application auth controls the web UI and its API. It does not make the shared
 Codex credential safe from a malicious person who can make an agent execute
 arbitrary commands in the same container. Use it only with trusted members and
 do not grant Docker or SSH access to ordinary members.
+
+The Docker image installs Codex CLI at `/usr/local/bin/codex` and sets
+`CODEX_CLI_PATH` explicitly for the extracted Electron shell. Do not override
+that variable unless the replacement path is executable inside the container.
 
 ### proxying to app-server (advanced usage)
 

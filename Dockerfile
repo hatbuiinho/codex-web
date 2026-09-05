@@ -64,7 +64,9 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     && npm install --global "@openai/codex@${CODEX_VERSION}"
 
 ENV NODE_ENV=production \
-    CODEX_HOME=/home/node/.codex
+    CODEX_HOME=/home/node/.codex \
+    CODEX_CLI_PATH=/usr/local/bin/codex \
+    CODEX_AUTH_CLI_PATH=/usr/local/bin/codex
 
 RUN mkdir -p /opt/codex-web /home/node/.codex /var/lib/codex-web /workspace \
     && chown -R node:node /home/node/.codex /var/lib/codex-web /workspace
