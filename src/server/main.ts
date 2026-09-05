@@ -126,6 +126,14 @@ type WorkspaceDirectoryEntries = {
   entries: WorkspaceDirectoryEntry[];
 };
 
+function isPathInside(rootPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(rootPath, candidatePath);
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith(`..${path.sep}`) && relativePath !== ".." && !path.isAbsolute(relativePath))
+  );
+}
+
 type MessagePortListener = (...args: unknown[]) => void;
 
 type BridgedMessagePort = {
@@ -334,8 +342,37 @@ async function getWorkspaceDirectoryEntries({
   directoryPath: string | null;
   directoriesOnly: boolean;
 }): Promise<WorkspaceDirectoryEntries> {
-  const requestedPath = directoryPath?.trim() || os.homedir();
-  const resolvedPath = path.resolve(requestedPath);
+  // The browser client must never start in the container user's home. In a
+  // shared deployment that would expose CODEX_HOME and makes users select an
+  // unrelated folder instead of the bind-mounted project workspace.
+  const configuredRoot = path.resolve(
+    process.env.CODEX_WORKSPACE_ROOT?.trim() || "/workspace",
+  );
+  let workspaceRoot: string;
+  try {
+    workspaceRoot = await fs.realpath(configuredRoot);
+  } catch {
+    throw new Error(
+      `Configured workspace root is unavailable: ${configuredRoot}. Check CODEX_WORKSPACE_PATH and the /workspace Docker mount.`,
+    );
+  }
+
+  const requestedPath = directoryPath?.trim() || workspaceRoot;
+  const unresolvedPath = path.resolve(requestedPath);
+  if (!isPathInside(workspaceRoot, unresolvedPath)) {
+    throw new Error(`Folder must be inside the shared workspace: ${workspaceRoot}`);
+  }
+
+  let resolvedPath: string;
+  try {
+    // realpath prevents a symlink inside /workspace from escaping the boundary.
+    resolvedPath = await fs.realpath(unresolvedPath);
+  } catch {
+    throw new Error(`Directory not found: ${requestedPath}`);
+  }
+  if (!isPathInside(workspaceRoot, resolvedPath)) {
+    throw new Error(`Folder must be inside the shared workspace: ${workspaceRoot}`);
+  }
   const stat = await fs.stat(resolvedPath);
   if (!stat.isDirectory()) {
     throw new Error(`Directory not found: ${requestedPath}`);
@@ -358,9 +395,8 @@ async function getWorkspaceDirectoryEntries({
     })
     .sort(compareWorkspaceDirectoryEntries);
 
-  const rootPath = path.parse(resolvedPath).root;
   const parentPath =
-    resolvedPath === rootPath ? null : path.dirname(resolvedPath);
+    resolvedPath === workspaceRoot ? null : path.dirname(resolvedPath);
 
   return {
     directoryPath: resolvedPath,

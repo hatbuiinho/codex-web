@@ -13,6 +13,8 @@ services:
     environment:
       NODE_ENV: production
       CODEX_HOME: /home/node/.codex
+      # The only filesystem tree exposed by the project picker in the browser.
+      CODEX_WORKSPACE_ROOT: ${CODEX_WORKSPACE_ROOT:-/workspace}
       # Codex's Linux sandbox (bwrap) cannot create a nested namespace under
       # Docker's default seccomp profile. The container itself is the boundary.
       CODEX_CLI_PATH: /usr/local/bin/codex-web-cli

@@ -79,6 +79,27 @@ Codex credential safe from a malicious person who can make an agent execute
 arbitrary commands in the same container. Use it only with trusted members and
 do not grant Docker or SSH access to ordinary members.
 
+### Shared workspace and projects
+
+Mount one server directory as `CODEX_WORKSPACE_PATH`; Docker maps it to
+`/workspace` inside the container. The remote-folder picker starts at, and is
+restricted to, `CODEX_WORKSPACE_ROOT` (default: `/workspace`). This is
+intentional: it prevents the picker from exposing `/home/node/.codex`, which
+contains the shared account credential.
+
+Create the project folders on the host before opening the UI, for example:
+
+```bash
+mkdir -p /srv/codex-workspace/comic/{assets,outputs,work}
+chown -R 1000:1000 /srv/codex-workspace
+```
+
+In **Projects** → **Create project** → **Add folders**, select
+`/workspace/comic` once and use **Add project** (a double-click only navigates
+into a folder). Every signed-in member then opens that same project and works
+against the same mounted files. The ChatGPT project is shared application
+metadata; it does not copy or create a second filesystem workspace.
+
 When the app is behind a reverse proxy, set `CODEX_WEB_PUBLIC_ORIGIN` to its
 exact public HTTPS origin. This allows the IPC WebSocket to validate browser
 origins without depending on the proxy's internal `Host` header.
