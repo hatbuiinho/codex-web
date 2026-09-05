@@ -598,6 +598,31 @@ export const ipcRenderer = {
   },
 };
 
+ipcRenderer.on(
+  "codex-web:select-workspace-folder",
+  (_event, value: unknown) => {
+    const requestId =
+      typeof value === "object" && value !== null &&
+      typeof (value as { requestId?: unknown }).requestId === "string"
+        ? (value as { requestId: string }).requestId
+        : null;
+    if (!requestId) {
+      return;
+    }
+    void openSelectWorkspaceRootDialog({
+      listDirectory: requestWorkspaceDirectoryEntries,
+    }).then(async (root) => {
+      if (root) {
+        setCurrentProjectExplorerRoot(root);
+      }
+      await ipcRenderer.invoke("codex-web:select-workspace-folder-result", {
+        requestId,
+        root,
+      });
+    });
+  },
+);
+
 ensureSocket();
 
 export const contextBridge = {

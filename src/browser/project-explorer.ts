@@ -32,7 +32,6 @@ export function installProjectExplorer({
     host.id = "codex-web-project-explorer";
     host.setAttribute("aria-label", "Project explorer");
     host.innerHTML = `
-      <button class="cw-explorer-toggle" type="button" aria-expanded="false" title="Project explorer">▤</button>
       <section class="cw-explorer-panel" hidden>
         <header>
           <div><strong>EXPLORER</strong><span class="cw-explorer-root"></span></div>
@@ -49,14 +48,13 @@ export function installProjectExplorer({
 
     const style = document.createElement("style");
     style.textContent = `
-      #codex-web-project-explorer { position: fixed; z-index: 90; left: 12px; bottom: 16px; font-family: ui-sans-serif, system-ui, sans-serif; }
-      .cw-explorer-toggle { border: 1px solid #505050; border-radius: 8px; background: #292929; color: #e8e8e8; cursor: pointer; font-size: 18px; height: 38px; width: 38px; }
-      .cw-explorer-panel { background: #212121; border: 1px solid #4a4a4a; border-radius: 10px; bottom: 48px; box-shadow: 0 12px 32px #0008; color: #e8e8e8; left: 0; position: absolute; width: min(330px, calc(100vw - 24px)); }
+      #codex-web-project-explorer { font-family: ui-sans-serif, system-ui, sans-serif; }
+      .cw-explorer-panel { background: #1d1d1d; border-left: 1px solid #444; bottom: 0; box-shadow: -12px 0 32px #0008; color: #e8e8e8; position: fixed; right: 0; top: 65px; width: min(42vw, 520px); z-index: 90; }
       .cw-explorer-panel header { align-items: center; border-bottom: 1px solid #424242; display: flex; font-size: 11px; justify-content: space-between; letter-spacing: .08em; padding: 10px 10px 8px 13px; }
       .cw-explorer-root { color: #a9a9a9; display: block; font-size: 10px; font-weight: normal; letter-spacing: normal; margin-top: 4px; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .cw-explorer-actions { display: flex; gap: 4px; }
       .cw-explorer-actions button { background: transparent; border: 0; border-radius: 4px; color: #d0d0d0; cursor: pointer; font-size: 17px; height: 24px; width: 24px; }
-      .cw-explorer-actions button:hover, .cw-explorer-toggle:hover { background: #3a3a3a; }
+      .cw-explorer-actions button:hover { background: #3a3a3a; }
       .cw-explorer-tree { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; max-height: min(60vh, 560px); overflow: auto; padding: 7px 0; }
       .cw-explorer-row { align-items: center; background: transparent; border: 0; color: inherit; cursor: default; display: flex; gap: 6px; min-height: 25px; overflow: hidden; padding: 0 10px; text-align: left; width: 100%; }
       button.cw-explorer-row { cursor: pointer; } button.cw-explorer-row:hover { background: #333; }
@@ -66,7 +64,6 @@ export function installProjectExplorer({
     document.head.append(style);
 
     const panel = host.querySelector<HTMLElement>(".cw-explorer-panel")!;
-    const toggle = host.querySelector<HTMLButtonElement>(".cw-explorer-toggle")!;
     const tree = host.querySelector<HTMLElement>(".cw-explorer-tree")!;
     const rootLabel = host.querySelector<HTMLElement>(".cw-explorer-root")!;
     let root: string | null = localStorage.getItem(STORAGE_KEY);
@@ -168,16 +165,43 @@ export function installProjectExplorer({
       expanded.clear();
       await refresh();
     };
-    toggle.addEventListener("click", () => {
-      panel.hidden = !panel.hidden;
-      toggle.setAttribute("aria-expanded", String(!panel.hidden));
-      if (!panel.hidden) {
-        void refresh();
-      }
+    const open = (): void => {
+      panel.hidden = false;
+      void refresh();
+    };
+    host.querySelector('[data-action="close"]')!.addEventListener("click", () => {
+      panel.hidden = true;
     });
-    host.querySelector('[data-action="close"]')!.addEventListener("click", () => toggle.click());
     host.querySelector('[data-action="refresh"]')!.addEventListener("click", () => void refresh());
     host.querySelector('[data-action="choose"]')!.addEventListener("click", () => void chooseRoot());
+
+    // The native desktop UI renders the Browser and Terminal actions in the
+    // right-side task pane. Add Explorer in that exact action group instead of
+    // a floating control, and keep trying because the pane is route-driven.
+    const installAction = (): void => {
+      if (document.querySelector("[data-codex-web-explorer-action]")) {
+        return;
+      }
+      const terminal = Array.from(
+        document.querySelectorAll<HTMLElement>('button, [role="button"]'),
+      ).find((element) => element.textContent?.trim() === "Terminal");
+      const actionGroup = terminal?.parentElement;
+      if (!terminal || !actionGroup) {
+        return;
+      }
+      const explorerAction = document.createElement("button");
+      explorerAction.type = "button";
+      explorerAction.className = terminal.className;
+      explorerAction.dataset.codexWebExplorerAction = "true";
+      explorerAction.innerHTML = '<span aria-hidden="true">▤</span><span>Explorer</span>';
+      explorerAction.addEventListener("click", open);
+      actionGroup.append(explorerAction);
+    };
+    installAction();
+    new MutationObserver(installAction).observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
   };
 
   if (document.readyState === "loading") {

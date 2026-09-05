@@ -748,7 +748,39 @@ class Notification {
   }
 }
 
+let workspaceDialogRequestId = 0;
+const pendingWorkspaceDialogRequests = new Map<
+  string,
+  (result: { canceled: boolean; filePaths: string[] }) => void
+>();
+
 const dialog = {
+  async showOpenDialog(
+    ...args: unknown[]
+  ): Promise<{ canceled: boolean; filePaths: string[] }> {
+    // The desktop app uses Electron's native folder dialog when a project
+    // source is added. In the browser build there is no native dialog, so ask
+    // the connected renderer to show the server-side workspace picker.
+    workspaceDialogRequestId += 1;
+    const requestId = `workspace-folder-${workspaceDialogRequestId}`;
+    log("dialog.showOpenDialog", args);
+    getIpcMainBridgeState().broadcastToRenderer?.({
+      type: "ipc-main-event",
+      channel: "codex-web:select-workspace-folder",
+      args: [{ requestId }],
+    });
+
+    return await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        pendingWorkspaceDialogRequests.delete(requestId);
+        resolve({ canceled: true, filePaths: [] });
+      }, 5 * 60_000);
+      pendingWorkspaceDialogRequests.set(requestId, (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      });
+    });
+  },
   async showMessageBox(...args: unknown[]): Promise<{ response: number }> {
     log("dialog.showMessageBox", args);
     return { response: 0 };
@@ -796,6 +828,29 @@ const net = {
 
 const autoUpdater = createEmitterStub("autoUpdater");
 const ipcMain = createIpcMainStub();
+
+ipcMain.handle(
+  "codex-web:select-workspace-folder-result",
+  (_event, value: unknown): { ok: boolean } => {
+    if (!value || typeof value !== "object") {
+      return { ok: false };
+    }
+    const { requestId, root } = value as { requestId?: unknown; root?: unknown };
+    if (typeof requestId !== "string") {
+      return { ok: false };
+    }
+    const resolve = pendingWorkspaceDialogRequests.get(requestId);
+    if (!resolve) {
+      return { ok: false };
+    }
+    pendingWorkspaceDialogRequests.delete(requestId);
+    resolve({
+      canceled: typeof root !== "string",
+      filePaths: typeof root === "string" ? [root] : [],
+    });
+    return { ok: true };
+  },
+);
 const nativeTheme = {
   ...createEmitterStub("nativeTheme"),
   shouldUseDarkColors: false,
