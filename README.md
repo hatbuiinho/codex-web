@@ -100,11 +100,6 @@ into a folder). Every signed-in member then opens that same project and works
 against the same mounted files. The ChatGPT project is shared application
 metadata; it does not copy or create a second filesystem workspace.
 
-The lower-left **Explorer** button (`▤`) provides a compact, VS Code-inspired
-tree for the current project source. It reads directly from the server-side
-workspace, supports expanding folders and refresh, and lets a member choose a
-different allowed project root. It is intentionally a read-only navigator;
-Codex performs the actual file edits in the selected project directory.
 
 When the app is behind a reverse proxy, set `CODEX_WEB_PUBLIC_ORIGIN` to its
 exact public HTTPS origin. This allows the IPC WebSocket to validate browser

@@ -10,10 +10,7 @@ import {
   openSelectWorkspaceRootDialog,
   type WorkspaceDirectoryEntries,
 } from "./workspace-root-dialog";
-import {
-  installProjectExplorer,
-  setCurrentProjectExplorerRoot,
-} from "./project-explorer";
+import { installFilesPanelStability } from "./files-panel-stability";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -353,8 +350,6 @@ function requestWorkspaceDirectoryEntries(
   });
 }
 
-installProjectExplorer({ listDirectory: requestWorkspaceDirectoryEntries });
-
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
@@ -450,8 +445,6 @@ export const ipcRenderer = {
             return undefined;
           }
 
-          setCurrentProjectExplorerRoot(root);
-
           return invokeMain(channel, [{ ...workspaceRootOption, root }]);
         });
       }
@@ -495,7 +488,6 @@ export const ipcRenderer = {
         if (!root) {
           return;
         }
-        setCurrentProjectExplorerRoot(root);
         enqueueMessage({
           type: "ipc-renderer-send",
           channel,
@@ -612,9 +604,6 @@ ipcRenderer.on(
     void openSelectWorkspaceRootDialog({
       listDirectory: requestWorkspaceDirectoryEntries,
     }).then(async (root) => {
-      if (root) {
-        setCurrentProjectExplorerRoot(root);
-      }
       await ipcRenderer.invoke("codex-web:select-workspace-folder-result", {
         requestId,
         root,
@@ -624,6 +613,7 @@ ipcRenderer.on(
 );
 
 ensureSocket();
+installFilesPanelStability();
 
 export const contextBridge = {
   exposeInMainWorld(_key: string, _api: unknown): void {
