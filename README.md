@@ -50,6 +50,11 @@ ChatGPT account from `/admin` using Device Auth. The credential is kept in the
 To pin the CLI version managed by Docker, set `CODEX_VERSION` in `.env` before
 building the image.
 
+Do not use plain `codex login` on a remote server: its browser OAuth flow
+returns to the CLI callback at `localhost:1455`. Use `/admin` → **Change account
+with Device Auth** instead, or run `codex login --device-auth` inside the
+container. Device Auth is the supported headless-server flow.
+
 ### application authentication
 
 This fork includes an application-level login layer for shared deployments. It

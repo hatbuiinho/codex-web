@@ -483,7 +483,9 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       return reply.code(401).send({ error: "Invalid email or password" });
     }
     failedLogins.delete(remoteAddress);
-    return reply.header("set-cookie", auth.cookie(result.token)).send({ ok: true });
+    return reply
+      .header("set-cookie", auth.cookie(result.token))
+      .send({ ok: true, role: result.session.role });
   });
 
   app.post("/__auth/logout", async (request, reply) => {
