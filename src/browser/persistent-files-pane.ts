@@ -10,6 +10,26 @@ type PersistentFilesPaneOptions = {
 const ROOT_STORAGE_KEY = "codex-web-active-project-root";
 let updateProjectRoot: ((root: string) => void) | undefined;
 
+function workspaceFileUrl(filePath: string): string {
+  // Keep slashes as path separators while safely escaping spaces, Vietnamese
+  // characters, and other filename characters for the /@fs static endpoint.
+  return `/@fs/${filePath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function openScrollablePdf(filePath: string, filename: string): void {
+  document.getElementById("codex-web-pdf-preview")?.remove();
+  const preview = document.createElement("section");
+  preview.id = "codex-web-pdf-preview";
+  preview.innerHTML = `<header><span class="cw-pdf-title"></span><button type="button" aria-label="Close PDF preview">×</button></header><iframe title="PDF preview"></iframe>`;
+  preview.querySelector(".cw-pdf-title")!.textContent = filename;
+  preview.querySelector<HTMLIFrameElement>("iframe")!.src = workspaceFileUrl(filePath);
+  preview.querySelector("button")!.onclick = () => preview.remove();
+  const style = document.createElement("style");
+  style.textContent = `#codex-web-pdf-preview{background:#171717;bottom:0;display:flex;flex-direction:column;left:0;position:fixed;right:0;top:0;z-index:100}#codex-web-pdf-preview header{align-items:center;border-bottom:1px solid #383838;color:#eee;display:flex;font:15px ui-sans-serif,system-ui;justify-content:space-between;min-height:50px;padding:0 16px}#codex-web-pdf-preview button{background:#303030;border:0;border-radius:6px;color:#fff;font-size:24px;height:32px;width:32px}#codex-web-pdf-preview iframe{border:0;flex:1;min-height:0;width:100%}`;
+  preview.append(style);
+  document.body.append(preview);
+}
+
 export function setPersistentFilesProjectRoot(root: string): void {
   localStorage.setItem(ROOT_STORAGE_KEY, root);
   updateProjectRoot?.(root);
@@ -70,6 +90,13 @@ export function installPersistentFilesPane({
                 }
               }
               render();
+              return;
+            }
+            if (entry.name.toLowerCase().endsWith(".pdf")) {
+              // The native desktop preview is paginated. Serving this local
+              // PDF through the browser viewer gives the same continuous
+              // scroll behaviour as a PDF link shown in a task.
+              openScrollablePdf(entry.path, entry.name);
               return;
             }
             // Preview remains owned by the upstream desktop surface. Dispatch
