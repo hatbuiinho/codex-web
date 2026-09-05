@@ -106,7 +106,10 @@ function WorkspaceRootDialog({
         ].join(" ")}
         data-state="open"
         onClick={() => onClose(null)}
-        style={{ pointerEvents: "auto" }}
+        // The extracted desktop UI also uses z-50 for its project modal. This
+        // picker is opened from that modal, so it must sit above it rather than
+        // behind it where its controls cannot be clicked.
+        style={{ pointerEvents: "auto", zIndex: 2147483646 }}
       />
       <div
         aria-describedby={DESCRIPTION_ID}
@@ -135,7 +138,7 @@ function WorkspaceRootDialog({
         data-state="open"
         ref={dialogRef}
         role="dialog"
-        style={{ pointerEvents: "auto" }}
+        style={{ pointerEvents: "auto", zIndex: 2147483647 }}
         tabIndex={-1}
       >
         <form
