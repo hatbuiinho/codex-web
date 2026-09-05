@@ -1,3 +1,7 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 type StubFunction = (...args: unknown[]) => unknown;
 type StubListener = (...args: unknown[]) => void;
 type StubMessagePort = {
@@ -793,10 +797,74 @@ const crashReporter = {
   },
 };
 
+type CodexAuthTokens = {
+  accessToken: string;
+  accountId?: string;
+};
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+async function readCodexAuthTokens(): Promise<CodexAuthTokens | null> {
+  try {
+    const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+    const parsed: unknown = JSON.parse(
+      await fs.readFile(path.join(codexHome, "auth.json"), "utf8"),
+    );
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const tokens = (parsed as { tokens?: unknown }).tokens;
+    if (!tokens || typeof tokens !== "object") {
+      return null;
+    }
+    const values = tokens as Record<string, unknown>;
+    const accessToken =
+      stringValue(values.access_token) ?? stringValue(values.accessToken);
+    if (!accessToken) {
+      return null;
+    }
+    return {
+      accessToken,
+      accountId: stringValue(values.account_id) ?? stringValue(values.accountId),
+    };
+  } catch {
+    // Device Auth may not be complete yet. Never log credential paths or
+    // token values; the upstream request will receive its normal response.
+    return null;
+  }
+}
+
+function isChatgptBackendRequest(input: string | URL): boolean {
+  try {
+    const url = new URL(input.toString());
+    return url.hostname === "chatgpt.com" && url.pathname.startsWith("/backend-api/");
+  } catch {
+    return false;
+  }
+}
+
 const net = {
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
     // log("net.fetch", [input, init]);
     if (typeof globalThis.fetch === "function") {
+      if (isChatgptBackendRequest(input)) {
+        const credentials = await readCodexAuthTokens();
+        if (credentials) {
+          const headers = new Headers(init?.headers);
+          if (!headers.has("authorization")) {
+            headers.set("authorization", `Bearer ${credentials.accessToken}`);
+          }
+          if (credentials.accountId && !headers.has("chatgpt-account-id")) {
+            headers.set("chatgpt-account-id", credentials.accountId);
+          }
+          return globalThis.fetch(input as URL | RequestInfo, {
+            ...init,
+            headers,
+          });
+        }
+      }
       return globalThis.fetch(input as URL | RequestInfo, init);
     }
     return new Response("", { status: 204 });
