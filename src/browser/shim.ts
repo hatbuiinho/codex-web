@@ -10,6 +10,10 @@ import {
   openSelectWorkspaceRootDialog,
   type WorkspaceDirectoryEntries,
 } from "./workspace-root-dialog";
+import {
+  installProjectExplorer,
+  setCurrentProjectExplorerRoot,
+} from "./project-explorer";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -335,6 +339,7 @@ function isOpenInBrowserMessage(value: unknown): value is {
 
 function requestWorkspaceDirectoryEntries(
   directoryPath: string | null,
+  directoriesOnly = true,
 ): Promise<WorkspaceDirectoryEntries> {
   const requestId = nextRequestId();
   return new Promise((resolve, reject) => {
@@ -343,10 +348,12 @@ function requestWorkspaceDirectoryEntries(
       type: "workspace-directory-entries-request",
       requestId,
       directoryPath,
-      directoriesOnly: true,
+      directoriesOnly,
     });
   });
 }
+
+installProjectExplorer({ listDirectory: requestWorkspaceDirectoryEntries });
 
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
@@ -435,6 +442,7 @@ export const ipcRenderer = {
       }
 
       if (isUnhandledAddWorkspaceRootOptionMessage(args[0])) {
+        const workspaceRootOption = args[0];
         return openSelectWorkspaceRootDialog({
           listDirectory: requestWorkspaceDirectoryEntries,
         }).then((root) => {
@@ -442,7 +450,9 @@ export const ipcRenderer = {
             return undefined;
           }
 
-          return invokeMain(channel, [{ ...args[0], root }]);
+          setCurrentProjectExplorerRoot(root);
+
+          return invokeMain(channel, [{ ...workspaceRootOption, root }]);
         });
       }
     }
@@ -473,6 +483,27 @@ export const ipcRenderer = {
     return this.removeListener(channel, listener);
   },
   send(channel: string, ...args: unknown[]): void {
+    if (
+      channel === "codex_desktop:message-from-view" &&
+      args.length === 1 &&
+      isUnhandledAddWorkspaceRootOptionMessage(args[0])
+    ) {
+      const workspaceRootOption = args[0];
+      void openSelectWorkspaceRootDialog({
+        listDirectory: requestWorkspaceDirectoryEntries,
+      }).then((root) => {
+        if (!root) {
+          return;
+        }
+        setCurrentProjectExplorerRoot(root);
+        enqueueMessage({
+          type: "ipc-renderer-send",
+          channel,
+          args: [{ ...workspaceRootOption, root }],
+        });
+      });
+      return;
+    }
     enqueueMessage({
       type: "ipc-renderer-send",
       channel,
