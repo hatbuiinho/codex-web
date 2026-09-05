@@ -19,7 +19,7 @@ import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
 import { AuthService, type AppRole, type AuthSession } from "./auth";
-import { adminPage, loginPage } from "./auth-ui";
+import { adminPage, deviceAuthPage, loginPage } from "./auth-ui";
 
 type ServerOptions = {
   host: string;
@@ -506,6 +506,14 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       return reply.code(403).type("text/plain").send("Administrator access is required");
     }
     return reply.type("text/html; charset=utf-8").send(adminPage(session));
+  });
+
+  app.get("/admin/device-auth", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    if (session.role !== "account_admin") {
+      return reply.code(403).type("text/plain").send("Administrator access is required");
+    }
+    return reply.type("text/html; charset=utf-8").send(deviceAuthPage(session));
   });
 
   app.get("/__admin/users", async (request, reply) => {
