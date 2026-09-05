@@ -7,6 +7,7 @@ services:
       args:
         NODE_VERSION: ${NODE_VERSION:-22.14.0}
         CODEX_VERSION: ${CODEX_VERSION:-0.153.2}
+    container_name: codex-web
     restart: unless-stopped
     init: true
     environment:
