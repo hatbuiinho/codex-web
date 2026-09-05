@@ -65,6 +65,7 @@ uses local users, signed server-side sessions, and two roles: `member` and
 CODEX_WEB_AUTH_SECRET="$(openssl rand -base64 48)"
 CODEX_WEB_BOOTSTRAP_ADMIN_EMAIL="admin@example.com"
 CODEX_WEB_BOOTSTRAP_ADMIN_PASSWORD="use-a-unique-password-with-12-or-more-characters"
+CODEX_WEB_PUBLIC_ORIGIN="https://codex.example.com"
 ```
 
 Sign in at `/login`. An `account_admin` can open `/admin` to add users and
@@ -77,6 +78,10 @@ Application auth controls the web UI and its API. It does not make the shared
 Codex credential safe from a malicious person who can make an agent execute
 arbitrary commands in the same container. Use it only with trusted members and
 do not grant Docker or SSH access to ordinary members.
+
+When the app is behind a reverse proxy, set `CODEX_WEB_PUBLIC_ORIGIN` to its
+exact public HTTPS origin. This allows the IPC WebSocket to validate browser
+origins without depending on the proxy's internal `Host` header.
 
 The Docker image installs Codex CLI at `/usr/local/bin/codex` and sets
 `CODEX_CLI_PATH` explicitly for the extracted Electron shell. Do not override

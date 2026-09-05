@@ -398,6 +398,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const app = Fastify({ logger: false });
   const websocketServer = new WebSocketServer({ noServer: true });
   const sockets = new Set<WebSocket>();
+  const publicOrigin = process.env.CODEX_WEB_PUBLIC_ORIGIN?.replace(/\/$/, "");
   const auth = new AuthService();
   const deviceLoginJobs = new Map<string, DeviceLoginJob>();
   const failedLogins = new Map<string, { attempts: number; resetAt: number }>();
@@ -730,7 +731,17 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
 
     const origin = request.headers.origin;
     try {
-      if (!origin || new URL(origin).host !== host) {
+      const parsedOrigin = origin ? new URL(origin) : null;
+      const actualOrigin = parsedOrigin?.origin ?? null;
+      const isAllowedOrigin = publicOrigin
+        ? actualOrigin === publicOrigin
+        : parsedOrigin?.host === host;
+      if (!isAllowedOrigin) {
+        console.warn("[ipc-bridge] rejected websocket with an unexpected Origin", {
+          origin: origin ?? null,
+          host,
+          publicOrigin: publicOrigin ?? null,
+        });
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         socket.destroy();
         return;
@@ -742,12 +753,14 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     }
 
     if (!auth.authenticate(request.headers.cookie)) {
+      console.warn("[ipc-bridge] rejected unauthenticated websocket");
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
 
     if (activeDeviceLoginJob?.state === "running") {
+      console.warn("[ipc-bridge] rejected websocket during account maintenance");
       socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

@@ -15,6 +15,7 @@ services:
       CODEX_HOME: /home/node/.codex
       CODEX_CLI_PATH: /usr/local/bin/codex
       CODEX_AUTH_CLI_PATH: /usr/local/bin/codex
+      CODEX_WEB_PUBLIC_ORIGIN: ${CODEX_WEB_PUBLIC_ORIGIN:-}
       CODEX_WEB_AUTH_DB: /var/lib/codex-web/auth.db
       CODEX_WEB_AUTH_SECRET: ${CODEX_WEB_AUTH_SECRET:?Set CODEX_WEB_AUTH_SECRET in .env}
       CODEX_WEB_AUTH_COOKIE_SECURE: "true"
