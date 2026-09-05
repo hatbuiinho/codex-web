@@ -13,8 +13,11 @@ services:
     environment:
       NODE_ENV: production
       CODEX_HOME: /home/node/.codex
-      CODEX_CLI_PATH: /usr/local/bin/codex
+      # Codex's Linux sandbox (bwrap) cannot create a nested namespace under
+      # Docker's default seccomp profile. The container itself is the boundary.
+      CODEX_CLI_PATH: /usr/local/bin/codex-web-cli
       CODEX_AUTH_CLI_PATH: /usr/local/bin/codex
+      CODEX_WEB_SANDBOX_MODE: ${CODEX_WEB_SANDBOX_MODE:-danger-full-access}
       CODEX_WEB_PUBLIC_ORIGIN: ${CODEX_WEB_PUBLIC_ORIGIN:-}
       CODEX_WEB_AUTH_DB: /var/lib/codex-web/auth.db
       CODEX_WEB_AUTH_SECRET: ${CODEX_WEB_AUTH_SECRET:?Set CODEX_WEB_AUTH_SECRET in .env}

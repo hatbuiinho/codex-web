@@ -1,0 +1,21 @@
+#!/bin/sh
+# Codex Web runs inside a purpose-built container.  Do not make bwrap create a
+# second Linux namespace inside that container: Docker's default seccomp policy
+# correctly rejects it and the terminal would fail before running the command.
+#
+# This wrapper deliberately applies the CLI's externally-sandboxed mode before
+# every invocation (including `app-server`).  Authentication uses the original
+# binary directly, so Device Auth output is unaffected.
+set -eu
+
+case "${CODEX_WEB_SANDBOX_MODE:-danger-full-access}" in
+  read-only|workspace-write|danger-full-access) ;;
+  *)
+    echo "Invalid CODEX_WEB_SANDBOX_MODE: ${CODEX_WEB_SANDBOX_MODE}" >&2
+    exit 64
+    ;;
+esac
+
+exec /usr/local/bin/codex \
+  -c "sandbox_mode = \"${CODEX_WEB_SANDBOX_MODE:-danger-full-access}\"" \
+  "$@"

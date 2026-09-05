@@ -83,9 +83,29 @@ When the app is behind a reverse proxy, set `CODEX_WEB_PUBLIC_ORIGIN` to its
 exact public HTTPS origin. This allows the IPC WebSocket to validate browser
 origins without depending on the proxy's internal `Host` header.
 
-The Docker image installs Codex CLI at `/usr/local/bin/codex` and sets
-`CODEX_CLI_PATH` explicitly for the extracted Electron shell. Do not override
-that variable unless the replacement path is executable inside the container.
+### Docker sandbox mode
+
+Docker is the outer isolation boundary for this deployment. Codex's normal
+Linux sandbox uses `bwrap` to create another namespace, but Docker's default
+seccomp profile rejects that operation. The resulting error is:
+
+```text
+bwrap: No permissions to create a new namespace
+```
+
+The image therefore uses `/usr/local/bin/codex-web-cli`, a small wrapper that
+sets `sandbox_mode = "danger-full-access"` for the CLI within this already
+isolated container. This allows command execution without granting the
+container `privileged`, `SYS_ADMIN`, or an unconfined seccomp profile.
+
+`CODEX_WEB_SANDBOX_MODE` defaults to `danger-full-access`; its other valid
+values are `workspace-write` and `read-only`. Do not use the default with
+untrusted users, mount `/var/run/docker.sock`, or mount sensitive host paths.
+The wrapper only affects Codex execution; it does not change Device Auth.
+
+The Docker image keeps the real CLI at `/usr/local/bin/codex` for Device Auth
+and configures the extracted Electron shell to use the wrapper. Do not override
+`CODEX_CLI_PATH` unless the replacement is executable inside the container.
 
 ### proxying to app-server (advanced usage)
 
