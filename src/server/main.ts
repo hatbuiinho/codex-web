@@ -426,6 +426,32 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       child.on("close", (code) => resolve({ code, output }));
     });
 
+  // The admin UI sends an empty JSON POST for actions that only need the
+  // session and CSRF token (for example, starting Device Auth). Fastify's
+  // default parser rejects an empty application/json body before the route is
+  // reached, so accept it as an empty object while retaining JSON validation.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_request, body, done) => {
+      const text = String(body);
+      if (text.trim() === "") {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(text));
+      } catch {
+        const error = new Error("Invalid JSON request body") as Error & {
+          statusCode?: number;
+        };
+        error.statusCode = 400;
+        done(error, undefined);
+      }
+    },
+  );
+
   app.get("/healthz", async () => ({ ok: true }));
   app.addHook("onRequest", async (request, reply) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
