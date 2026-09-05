@@ -152,6 +152,33 @@ const pendingDirectoryEntries = new Map<
 >();
 const rendererListeners = new Map<string, Set<IpcListener>>();
 const messagePorts = new Map<string, MessagePort>();
+const recentIpcEvents = new Map<string, number>();
+const IPC_DEDUP_WINDOW_MS = 3_000;
+
+function isDuplicateIpcEvent(channel: string, args: unknown[]): boolean {
+  // The desktop shell can emit the same bridge event through two window
+  // targets. Streaming text deltas are append-only, so delivering an exact
+  // duplicate corrupts only the in-progress text (and the final state later
+  // appears correct). Keep this client-local: it does not suppress distinct
+  // events for other signed-in users.
+  let fingerprint: string;
+  try {
+    fingerprint = `${channel}:${JSON.stringify(args)}`;
+  } catch {
+    return false;
+  }
+  const now = Date.now();
+  const previous = recentIpcEvents.get(fingerprint);
+  recentIpcEvents.set(fingerprint, now);
+  if (recentIpcEvents.size > 1_000) {
+    for (const [key, timestamp] of recentIpcEvents) {
+      if (now - timestamp > IPC_DEDUP_WINDOW_MS) {
+        recentIpcEvents.delete(key);
+      }
+    }
+  }
+  return previous !== undefined && now - previous < IPC_DEDUP_WINDOW_MS;
+}
 
 function unimplemented(method: string): never {
   debugger;
@@ -171,6 +198,9 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
 
 function handleIncomingMessage(message: MainToRendererMessage): void {
   if (message.type === "ipc-main-event") {
+    if (isDuplicateIpcEvent(message.channel, message.args)) {
+      return;
+    }
     emitRendererEvent(message.channel, message.args);
     return;
   }
