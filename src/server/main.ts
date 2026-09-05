@@ -321,6 +321,12 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+function stripAnsi(value: string): string {
+  return value
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replaceAll("\r", "");
+}
+
 async function getWorkspaceDirectoryEntries({
   directoryPath,
   directoriesOnly,
@@ -423,7 +429,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       child.stdout.on("data", append);
       child.stderr.on("data", append);
       child.on("error", (error) => resolve({ code: null, output: error.message }));
-      child.on("close", (code) => resolve({ code, output }));
+      child.on("close", (code) => resolve({ code, output: stripAnsi(output) }));
     });
 
   // The admin UI sends an empty JSON POST for actions that only need the
@@ -639,7 +645,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       if (!job || job.userId !== session.userId) {
         return reply.code(404).send({ error: "Device Auth operation not found" });
       }
-      return { id: job.id, state: job.state, output: job.output };
+      return { id: job.id, state: job.state, output: stripAnsi(job.output) };
     } catch (error) {
       return reply.code(403).send({ error: errorMessage(error) });
     }
