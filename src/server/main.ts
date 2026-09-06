@@ -502,6 +502,9 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       pathname === "/healthz" ||
       pathname === "/login" ||
       pathname === "/__auth/login" ||
+      pathname === "/manifest.json" ||
+      pathname === "/service-worker.js" ||
+      pathname.startsWith("/assets/") ||
       pathname.startsWith("/__auth-assets/")
     ) {
       return;

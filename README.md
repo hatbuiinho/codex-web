@@ -32,6 +32,15 @@ an exact, one-time source replacement rather than a conflicting line-based
 diff. It fails the image build when its expected handler changes, so an upstream
 update is reviewed rather than silently applying to the wrong code.
 
+### PWA
+
+The browser client is installable as a PWA. It registers `/service-worker.js`
+and caches only static UI assets; authenticated pages, API responses, and files
+under `/@fs/` are never cached. Installation requires HTTPS at
+`CODEX_WEB_PUBLIC_ORIGIN` (or `localhost` for development). If the install
+option does not appear, open the site once while signed in, then inspect
+DevTools → Application → Manifest and Service Workers for a proxy or TLS error.
+
 ## usage
 
 `codex-web` serves the browser client and hosts the desktop-side bridge. by
