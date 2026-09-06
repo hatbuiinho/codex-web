@@ -50,7 +50,7 @@ patched = replaceOnce(
 );
 patched = replaceOnce(
   patched,
-  /t\[1\]\s*=\s*l\s*,\s*t\[2\]\s*=\s*m\s*,\s*t\[3\]\s*=\s*d\s*,\s*t\[4\]\s*=\s*r\s*,\s*t\[5\]\s*=\s*n\.dataUrl/g,
+  /t\[1\]\s*=\s*l\s*[;,]\s*t\[2\]\s*=\s*m\s*[;,]\s*t\[3\]\s*=\s*d\s*[;,]\s*t\[4\]\s*=\s*r\s*[;,]\s*t\[5\]\s*=\s*n\.dataUrl/g,
   "t[1]=l,t[2]=m,t[3]=`${d}:${u??0}`,t[4]=r,t[5]=n.dataUrl",
   "PDF preview cache assignment",
 );
