@@ -18,6 +18,17 @@ device with a browser.
 this project aims to be as thin a wrapper as possible to ensure upstream changes
 to the codex desktop app can be integrated quickly.
 
+### Upstream Files preview patch
+
+The Docker build applies one narrow, checked upstream patch for the **Files**
+PDF preview: it renders all PDF pages in the native preview scroll container
+instead of the desktop app's one-page-at-a-time viewer. The Files tree itself
+remains the upstream React component; no DOM overlay is installed.
+
+The patch has narrow source context around the single-page renderer. A Codex
+Desktop update that changes that component makes the image build fail, so the
+change is reviewed rather than silently applying to the wrong code.
+
 ## usage
 
 `codex-web` serves the browser client and hosts the desktop-side bridge. by

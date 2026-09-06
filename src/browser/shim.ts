@@ -10,10 +10,6 @@ import {
   openSelectWorkspaceRootDialog,
   type WorkspaceDirectoryEntries,
 } from "./workspace-root-dialog";
-import {
-  installPersistentFilesPane,
-  setPersistentFilesProjectRoot,
-} from "./persistent-files-pane";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -383,8 +379,6 @@ function requestWorkspaceDirectoryEntries(
   });
 }
 
-installPersistentFilesPane({ listDirectory: requestWorkspaceDirectoryEntries });
-
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
@@ -480,8 +474,6 @@ export const ipcRenderer = {
             return undefined;
           }
 
-          setPersistentFilesProjectRoot(root);
-
           return invokeMain(channel, [{ ...workspaceRootOption, root }]);
         });
       }
@@ -525,7 +517,6 @@ export const ipcRenderer = {
         if (!root) {
           return;
         }
-        setPersistentFilesProjectRoot(root);
         enqueueMessage({
           type: "ipc-renderer-send",
           channel,
@@ -646,7 +637,6 @@ ipcRenderer.on(
         requestId,
         root,
       });
-      if (root) setPersistentFilesProjectRoot(root);
     });
   },
 );
