@@ -39,27 +39,22 @@ patched = replaceOnce(
   "single-page PDF renderer",
 );
 
-// This bundle is compiled with React Compiler memo slots. Include numPages in
-// the cache key, otherwise the tree initially renders zero pages and remains
-// cached after PDF.js discovers its page count.
+// This bundle is compiled with React Compiler memo slots. Before PDF.js has
+// loaded, numPages is null and the list is empty. Force the preview subtree to
+// be rebuilt after numPages becomes available; this avoids depending on the
+// compiler-generated cache assignment layout, which Prettier can rewrite.
 patched = replaceOnce(
   patched,
   /t\[3\]\s*!==\s*d\s*\|\|\s*t\[4\]\s*!==\s*r\s*\|\|\s*t\[5\]\s*!==\s*n\.dataUrl/g,
-  "t[3]!==`${d}:${u??0}`||t[4]!==r||t[5]!==n.dataUrl",
+  "t[3]!==d||t[4]!==r||t[5]!==n.dataUrl||u!==null",
   "PDF preview cache condition",
-);
-patched = replaceOnce(
-  patched,
-  /t\[1\]\s*=\s*l\s*[;,]\s*t\[2\]\s*=\s*m\s*[;,]\s*t\[3\]\s*=\s*d\s*[;,]\s*t\[4\]\s*=\s*r\s*[;,]\s*t\[5\]\s*=\s*n\.dataUrl/g,
-  "t[1]=l,t[2]=m,t[3]=`${d}:${u??0}`,t[4]=r,t[5]=n.dataUrl",
-  "PDF preview cache assignment",
 );
 
 // Pager actions no longer describe the continuous document. Keep dPt intact
 // (it is shared by this compiled module) but hide its controls for Files.
 patched = replaceOnce(
   patched,
-  /showPager:\s*p\s*}\s*,\s*e\[4\]\s*=\s*f/g,
+  /showPager:\s*p\s*,?\s*}\s*[;,]\s*e\[4\]\s*=\s*f/g,
   "showPager:!1},e[4]=f",
   "Files PDF pager setting",
 );
