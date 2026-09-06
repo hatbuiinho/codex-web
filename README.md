@@ -25,9 +25,11 @@ PDF preview: it renders all PDF pages in the native preview scroll container
 instead of the desktop app's one-page-at-a-time viewer. The Files tree itself
 remains the upstream React component; no DOM overlay is installed.
 
-The patch has narrow source context around the single-page renderer. A Codex
-Desktop update that changes that component makes the image build fail, so the
-change is reviewed rather than silently applying to the wrong code.
+The compiled upstream bundle places this renderer on the same minified line as
+another required upstream patch. Therefore `patch_upstream_files_pdf.mjs` uses
+exact, one-time source replacements rather than a conflicting line-based diff.
+It fails the image build when any expected target changes, so an upstream update
+is reviewed rather than silently applying to the wrong code.
 
 ## usage
 

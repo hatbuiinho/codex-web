@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       unzip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/prepare scripts/prepare_asar ./scripts/
+COPY scripts/prepare scripts/prepare_asar scripts/patch_upstream_files_pdf.mjs ./scripts/
 COPY assets ./assets
 COPY patches ./patches
 RUN PATH="/app/node_modules/.bin:${PATH}" ./scripts/prepare
