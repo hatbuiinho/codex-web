@@ -89,26 +89,6 @@ type MainToRendererMessage =
 
 const RECONNECT_DELAY_MS = 1_000;
 
-function registerPwaServiceWorker(): void {
-  if (
-    !window.isSecureContext ||
-    !("serviceWorker" in navigator) ||
-    window.location.protocol === "file:"
-  ) {
-    return;
-  }
-
-  void navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch(
-    (error: unknown) => {
-      // PWA is progressive enhancement. Do not make the desktop bridge fail
-      // when a browser blocks service workers or the reverse proxy is HTTP.
-      console.warn("[pwa] service worker registration failed", error);
-    },
-  );
-}
-
-registerPwaServiceWorker();
-
 type MemoryNavigationChange = {
   action: "POP" | "PUSH" | "REPLACE";
   delta: number;

@@ -12,7 +12,7 @@ function escapeHtml(value: string): string {
 function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)}</title><link rel="stylesheet" href="/__auth-assets/auth.css"></head><body class="min-h-screen bg-slate-950 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-950 via-slate-950 to-slate-950 text-slate-100"><main class="mx-auto my-8 w-full max-w-4xl px-4 sm:my-14 sm:px-6">${body}</main></body></html>`;
+<title>${escapeHtml(title)}</title><link rel="manifest" href="/manifest.json"><script defer src="/assets/pwa-register.js"></script><link rel="stylesheet" href="/__auth-assets/auth.css"></head><body class="min-h-screen bg-slate-950 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-950 via-slate-950 to-slate-950 text-slate-100"><main class="mx-auto my-8 w-full max-w-4xl px-4 sm:my-14 sm:px-6">${body}</main></body></html>`;
 }
 
 export function loginPage(): string {

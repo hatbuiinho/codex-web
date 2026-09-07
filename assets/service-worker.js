@@ -1,6 +1,6 @@
 /* global self, caches, fetch */
 
-const CACHE_NAME = "codex-web-static-v1";
+const CACHE_NAME = "codex-web-static-v2";
 const STATIC_PATH = /^\/(?:assets\/|favicon\.svg$|manifest\.json$)/;
 
 self.addEventListener("install", () => {
