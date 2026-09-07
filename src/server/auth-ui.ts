@@ -24,6 +24,22 @@ export function loginPage(): string {
   );
 }
 
+/**
+ * This page gives every authenticated role a safe exit path. The upstream
+ * Codex UI has no knowledge of our local auth session, so it cannot render a
+ * reliable account menu itself.
+ */
+export function logoutPage(session: AuthSession): string {
+  const sessionJson = JSON.stringify({ csrfToken: session.csrfToken }).replaceAll(
+    "<",
+    "\\u003c",
+  );
+  return page(
+    "Sign out · Codex Web",
+    `<section class="mx-auto max-w-md rounded-2xl border border-white/10 bg-slate-900/80 p-7 shadow-2xl shadow-black/30 backdrop-blur sm:p-9"><p class="mb-2 text-sm font-semibold tracking-widest text-indigo-300 uppercase">Shared workspace</p><h1 class="text-3xl font-semibold tracking-tight text-white">Sign out?</h1><p class="mt-3 text-sm leading-6 text-slate-400">This ends the current browser session for this Codex Web account. It does not change the shared ChatGPT account.</p><div class="mt-8 flex gap-3"><button id="logout" class="rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-950/50 transition hover:bg-indigo-400">Sign out</button><a class="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 transition hover:bg-slate-800" href="/">Cancel</a></div><p id="message" class="mt-4 min-h-5 text-sm text-rose-300" role="alert"></p></section><script>const csrfToken=${sessionJson}.csrfToken;document.querySelector('#logout').addEventListener('click',async()=>{const button=document.querySelector('#logout');button.disabled=true;const response=await fetch('/__auth/logout',{method:'POST',headers:{'x-csrf-token':csrfToken}});if(response.ok){location='/login';return}const body=await response.json().catch(()=>({}));document.querySelector('#message').textContent=body.error||'Could not sign out';button.disabled=false})</script>`,
+  );
+}
+
 export function adminPage(session: AuthSession): string {
   const sessionJson = JSON.stringify({
     email: session.email,

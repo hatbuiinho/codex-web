@@ -19,7 +19,7 @@ import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
 import { AuthService, type AppRole, type AuthSession } from "./auth";
-import { adminPage, deviceAuthPage, loginPage } from "./auth-ui";
+import { adminPage, deviceAuthPage, loginPage, logoutPage } from "./auth-ui";
 
 type ServerOptions = {
   host: string;
@@ -570,6 +570,11 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     auth.logout(request.headers.cookie);
     auth.audit(session.userId, "user.logout");
     return reply.header("set-cookie", auth.clearCookie()).send({ ok: true });
+  });
+
+  app.get("/logout", async (request, reply) => {
+    const session = (request as typeof request & RequestWithSession).authSession!;
+    return reply.type("text/html; charset=utf-8").send(logoutPage(session));
   });
 
   app.get("/admin", async (request, reply) => {
