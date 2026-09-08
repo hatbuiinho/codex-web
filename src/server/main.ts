@@ -72,6 +72,10 @@ type RendererToMainMessage =
       requestId: string;
       directoryPath: string | null;
       directoriesOnly: boolean;
+    }
+  | {
+      type: "bridge-ping";
+      sentAt: number;
     };
 
 type MainToRendererMessage =
@@ -112,6 +116,10 @@ type MainToRendererMessage =
   | {
       type: "message-port-close";
       portId: string;
+    }
+  | {
+      type: "bridge-pong";
+      sentAt: number;
     };
 
 type WorkspaceDirectoryEntry = {
@@ -862,6 +870,17 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
         message = JSON.parse(String(rawData)) as RendererToMainMessage;
       } catch (error) {
         console.error("[ipc-bridge] invalid JSON payload", error);
+        return;
+      }
+
+      if (message.type === "bridge-ping") {
+        if (socket.readyState === WebSocket.OPEN) {
+          const pong: MainToRendererMessage = {
+            type: "bridge-pong",
+            sentAt: message.sentAt,
+          };
+          socket.send(JSON.stringify(pong));
+        }
         return;
       }
 

@@ -45,6 +45,10 @@ type RendererToMainMessage =
       requestId: string;
       directoryPath: string | null;
       directoriesOnly: boolean;
+    }
+  | {
+      type: "bridge-ping";
+      sentAt: number;
     };
 
 type MainToRendererMessage =
@@ -85,9 +89,15 @@ type MainToRendererMessage =
   | {
       type: "message-port-close";
       portId: string;
+    }
+  | {
+      type: "bridge-pong";
+      sentAt: number;
     };
 
 const RECONNECT_DELAY_MS = 1_000;
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const HEARTBEAT_TIMEOUT_MS = 60_000;
 
 type MemoryNavigationChange = {
   action: "POP" | "PUSH" | "REPLACE";
@@ -131,6 +141,8 @@ declare const __CODEX_APP_VERSION__: string;
 let requestCounter = 0;
 let socket: WebSocket | null = null;
 let reconnectTimeoutId: number | null = null;
+let heartbeatIntervalId: number | null = null;
+let lastPongAt = 0;
 const outboundQueue: RendererToMainMessage[] = [];
 const pendingInvokes = new Map<
   string,
@@ -193,6 +205,11 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
 }
 
 function handleIncomingMessage(message: MainToRendererMessage): void {
+  if (message.type === "bridge-pong") {
+    lastPongAt = Date.now();
+    return;
+  }
+
   if (message.type === "ipc-main-event") {
     if (isDuplicateIpcEvent(message.channel, message.args)) {
       return;
@@ -245,19 +262,97 @@ function flushOutboundQueue(): void {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
-  for (const message of outboundQueue.splice(0)) {
-    socket.send(JSON.stringify(message));
+  const queued = outboundQueue.splice(0);
+  for (let index = 0; index < queued.length; index += 1) {
+    try {
+      socket.send(JSON.stringify(queued[index]));
+    } catch (error) {
+      // send() only throws before the browser accepts the frame. Preserve the
+      // unsent tail, then reconnect. Already-sent messages are never replayed:
+      // an IPC action may write a file or start a command.
+      outboundQueue.unshift(...queued.slice(index));
+      console.warn("[electron-stub] IPC socket send failed", error);
+      forceReconnect("send failed");
+      return;
+    }
   }
 }
 
-function scheduleReconnect(): void {
+function rejectPendingRequests(reason: string): void {
+  const error = new Error(reason);
+  for (const pending of pendingInvokes.values()) {
+    pending.reject(error);
+  }
+  pendingInvokes.clear();
+
+  for (const pending of pendingDirectoryEntries.values()) {
+    pending.reject(error);
+  }
+  pendingDirectoryEntries.clear();
+}
+
+function closeMessagePorts(): void {
+  for (const port of messagePorts.values()) {
+    port.close();
+  }
+  messagePorts.clear();
+}
+
+function scheduleReconnect(delay = RECONNECT_DELAY_MS): void {
   if (reconnectTimeoutId !== null) {
-    return;
+    if (delay !== 0) {
+      return;
+    }
+    window.clearTimeout(reconnectTimeoutId);
+    reconnectTimeoutId = null;
   }
   reconnectTimeoutId = window.setTimeout(() => {
     reconnectTimeoutId = null;
     ensureSocket();
-  }, RECONNECT_DELAY_MS);
+  }, delay);
+}
+
+function forceReconnect(reason: string): void {
+  const connection = socket;
+  if (connection) {
+    socket = null;
+    closeMessagePorts();
+    rejectPendingRequests(`IPC connection lost: ${reason}`);
+    if (
+      connection.readyState === WebSocket.OPEN ||
+      connection.readyState === WebSocket.CONNECTING
+    ) {
+      connection.close(4000, reason.slice(0, 123));
+    }
+  }
+  scheduleReconnect(0);
+}
+
+function heartbeat(): void {
+  if (document.visibilityState === "hidden") {
+    return;
+  }
+  if (socket?.readyState !== WebSocket.OPEN) {
+    ensureSocket();
+    return;
+  }
+  if (Date.now() - lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+    forceReconnect("heartbeat timed out");
+    return;
+  }
+  try {
+    socket.send(JSON.stringify({ type: "bridge-ping", sentAt: Date.now() }));
+  } catch (error) {
+    console.warn("[electron-stub] IPC heartbeat failed", error);
+    forceReconnect("heartbeat failed");
+  }
+}
+
+function startHeartbeat(): void {
+  if (heartbeatIntervalId !== null) {
+    return;
+  }
+  heartbeatIntervalId = window.setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
 }
 
 function ensureSocket(): void {
@@ -269,13 +364,19 @@ function ensureSocket(): void {
     return;
   }
 
-  socket = new WebSocket(
+  const connection = new WebSocket(
     `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc`,
   );
-  socket.addEventListener("open", () => {
+  socket = connection;
+  connection.addEventListener("open", () => {
+    if (socket !== connection) {
+      connection.close(4000, "superseded connection");
+      return;
+    }
+    lastPongAt = Date.now();
     flushOutboundQueue();
   });
-  socket.addEventListener("message", (event) => {
+  connection.addEventListener("message", (event) => {
     try {
       const message = JSON.parse(String(event.data)) as MainToRendererMessage;
       handleIncomingMessage(message);
@@ -286,15 +387,19 @@ function ensureSocket(): void {
       );
     }
   });
-  socket.addEventListener("close", () => {
-    for (const port of messagePorts.values()) {
-      port.close();
+  connection.addEventListener("close", () => {
+    if (socket !== connection) {
+      return;
     }
-    messagePorts.clear();
+    socket = null;
+    closeMessagePorts();
+    rejectPendingRequests("IPC connection closed. Please retry the action.");
     scheduleReconnect();
   });
-  socket.addEventListener("error", () => {
-    scheduleReconnect();
+  connection.addEventListener("error", () => {
+    if (socket === connection) {
+      forceReconnect("socket error");
+    }
   });
 }
 
@@ -641,7 +746,24 @@ ipcRenderer.on(
   },
 );
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    // Mobile browsers commonly retain a dead WebSocket as OPEN after a
+    // background/foreground cycle. Recreate the bridge when the page resumes.
+    forceReconnect("page resumed");
+  }
+});
+
+window.addEventListener("pageshow", () => {
+  forceReconnect("page restored");
+});
+
+window.addEventListener("online", () => {
+  forceReconnect("network restored");
+});
+
 ensureSocket();
+startHeartbeat();
 
 export const contextBridge = {
   exposeInMainWorld(_key: string, _api: unknown): void {
