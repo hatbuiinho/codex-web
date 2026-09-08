@@ -143,6 +143,7 @@ let socket: WebSocket | null = null;
 let reconnectTimeoutId: number | null = null;
 let heartbeatIntervalId: number | null = null;
 let lastPongAt = 0;
+let lastResumeReconnectAt = 0;
 const outboundQueue: RendererToMainMessage[] = [];
 const pendingInvokes = new Map<
   string,
@@ -312,7 +313,7 @@ function scheduleReconnect(delay = RECONNECT_DELAY_MS): void {
   }, delay);
 }
 
-function forceReconnect(reason: string): void {
+function forceReconnect(reason: string, immediately = false): void {
   const connection = socket;
   if (connection) {
     socket = null;
@@ -325,7 +326,27 @@ function forceReconnect(reason: string): void {
       connection.close(4000, reason.slice(0, 123));
     }
   }
+  if (immediately) {
+    if (reconnectTimeoutId !== null) {
+      window.clearTimeout(reconnectTimeoutId);
+      reconnectTimeoutId = null;
+    }
+    // A resumed mobile tab can throttle zero-delay timers for many seconds.
+    // Constructing WebSocket here starts the TCP/TLS handshake immediately.
+    ensureSocket();
+    return;
+  }
   scheduleReconnect(0);
+}
+
+function reconnectAfterResume(reason: string): void {
+  const now = Date.now();
+  if (now - lastResumeReconnectAt < 1_000) {
+    ensureSocket();
+    return;
+  }
+  lastResumeReconnectAt = now;
+  forceReconnect(reason, true);
 }
 
 function heartbeat(): void {
@@ -750,16 +771,20 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     // Mobile browsers commonly retain a dead WebSocket as OPEN after a
     // background/foreground cycle. Recreate the bridge when the page resumes.
-    forceReconnect("page resumed");
+    reconnectAfterResume("page resumed");
   }
 });
 
 window.addEventListener("pageshow", () => {
-  forceReconnect("page restored");
+  reconnectAfterResume("page restored");
+});
+
+window.addEventListener("focus", () => {
+  reconnectAfterResume("window focused");
 });
 
 window.addEventListener("online", () => {
-  forceReconnect("network restored");
+  reconnectAfterResume("network restored");
 });
 
 ensureSocket();
