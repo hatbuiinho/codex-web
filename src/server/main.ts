@@ -20,6 +20,8 @@ import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
 import { AuthService, type AppRole, type AuthSession } from "./auth";
 import { adminPage, deviceAuthPage, loginPage, logoutPage } from "./auth-ui";
+import { BridgeSession } from "./bridge-session";
+import { getThreadImageContext } from "./thread-context";
 
 type ServerOptions = {
   host: string;
@@ -534,6 +536,17 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     }
   });
 
+  app.get("/__backend/connection", async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return { ok: true };
+  });
+
+  app.get<{ Params: { threadId: string } }>("/__backend/thread-context/:threadId", async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    if (!/^[a-f0-9-]{36}$/i.test(request.params.threadId)) return reply.code(400).send({ error: "Invalid thread ID" });
+    return getThreadImageContext(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), request.params.threadId);
+  });
+
   app.get("/login", async (request, reply) => {
     if (auth.authenticate(request.headers.cookie)) {
       return reply.redirect("/");
@@ -823,19 +836,76 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     });
   });
 
+  const bridgeSessions = new Map<string, {
+    replay: BridgeSession;
+    ports: Map<string, WebSocketMessagePort>;
+    socket: WebSocket | null;
+    expiry: ReturnType<typeof setTimeout> | null;
+  }>();
+  const legacySockets = new Set<WebSocket>();
+  const dispatchedEvents = new WeakMap<object, Set<string>>();
   bridgeState.broadcastToRenderer = (message: MainToRendererMessage): void => {
-    const payload = JSON.stringify(message);
-    for (const socket of sockets) {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(payload);
+    // Desktop can route the SAME event object through multiple window targets
+    // synchronously. Suppress that routing duplication only, never equal text
+    // emitted by distinct streaming notifications.
+    if (message.type === "ipc-main-event") {
+      const event = message.args[0];
+      if (event && typeof event === "object") {
+        const channels = dispatchedEvents.get(event) ?? new Set<string>();
+        if (channels.has(message.channel)) return;
+        channels.add(message.channel);
+        dispatchedEvents.set(event, channels);
+        queueMicrotask(() => dispatchedEvents.delete(event));
       }
+    }
+    for (const session of bridgeSessions.values()) session.replay.publish(message);
+    for (const socket of legacySockets) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
     }
   };
 
-  websocketServer.on("connection", (socket) => {
+  websocketServer.on("connection", (socket, request) => {
     sockets.add(socket);
-
-    const messagePorts = new Map<string, WebSocketMessagePort>();
+    const query = new URL(request.url ?? "/", "http://localhost").searchParams;
+    const clientId = query.get("clientId");
+    const authSession = auth.authenticate(request.headers.cookie);
+    const sessionKey = clientId && authSession && /^[a-zA-Z0-9-]{16,80}$/.test(clientId)
+      ? `${authSession.id}:${clientId}` : null;
+    let session = sessionKey ? bridgeSessions.get(sessionKey) : undefined;
+    if (sessionKey && !session && query.get("resume") === "1") {
+      socket.send(JSON.stringify({ type: "bridge-reset", reason: "Session expired or server restarted" }));
+      socket.close(4001, "renderer reload required");
+      sockets.delete(socket);
+      return;
+    }
+    if (sessionKey && !session) {
+      session = { replay: new BridgeSession(), ports: new Map(), socket: null, expiry: null };
+      bridgeSessions.set(sessionKey, session);
+    }
+    const messagePorts = session?.ports ?? new Map<string, WebSocketMessagePort>();
+    const sendToRenderer = (message: MainToRendererMessage): void => {
+      if (session) session.replay.publish(message);
+      else if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    };
+    if (session) {
+      if (session.expiry) clearTimeout(session.expiry);
+      session.expiry = null;
+      session.socket?.close(4000, "superseded connection");
+      session.socket = socket;
+      if (!session.replay.attach(Number(query.get("after") ?? 0), (json) => {
+        if (socket.readyState === WebSocket.OPEN) socket.send(json);
+      })) {
+        session.replay.detach();
+        session.socket = null;
+        for (const port of messagePorts.values()) port.disconnect();
+        bridgeSessions.delete(sessionKey!);
+        socket.send(JSON.stringify({ type: "bridge-reset", reason: "Recovery buffer exhausted" }));
+        socket.close(4001, "renderer reload required");
+        sockets.delete(socket);
+        return;
+      }
+      socket.send(JSON.stringify({ type: "bridge-ready" }));
+    } else legacySockets.add(socket);
     const dispatchPostMessage = (
       channel: string,
       message: unknown,
@@ -858,13 +928,25 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
 
     socket.on("close", () => {
       sockets.delete(socket);
-      for (const port of messagePorts.values()) {
-        port.disconnect();
+      legacySockets.delete(socket);
+      if (session) {
+        if (session.socket !== socket) return;
+        session.socket = null;
+        session.replay.detach();
+        session.expiry = setTimeout(() => {
+          for (const port of messagePorts.values()) port.disconnect();
+          messagePorts.clear();
+          bridgeSessions.delete(sessionKey!);
+        }, 120_000);
+        session.expiry.unref();
+      } else {
+        for (const port of messagePorts.values()) port.disconnect();
+        messagePorts.clear();
       }
-      messagePorts.clear();
     });
 
     socket.on("message", (rawData) => {
+      if (session && session.socket !== socket) return;
       let message: RendererToMainMessage;
       try {
         message = JSON.parse(String(rawData)) as RendererToMainMessage;
@@ -902,11 +984,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
           }
           const port = new WebSocketMessagePort(
             portId,
-            (message) => {
-              if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify(message));
-              }
-            },
+            sendToRenderer,
             () => messagePorts.delete(portId),
           );
           messagePorts.set(portId, port);
@@ -942,9 +1020,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
               ok: true,
               result,
             };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
+            sendToRenderer(payload);
           })
           .catch((error) => {
             const payload: MainToRendererMessage = {
@@ -953,9 +1029,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
               ok: false,
               errorMessage: errorMessage(error),
             };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
+            sendToRenderer(payload);
           });
         return;
       }
@@ -977,9 +1051,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
               ok: true,
               result,
             };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
+            sendToRenderer(payload);
           })
           .catch((error) => {
             const payload: MainToRendererMessage = {
@@ -988,9 +1060,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
               ok: false,
               errorMessage: errorMessage(error),
             };
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify(payload));
-            }
+            sendToRenderer(payload);
           });
       }
     });

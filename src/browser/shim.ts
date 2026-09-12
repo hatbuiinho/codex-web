@@ -10,6 +10,7 @@ import {
   openSelectWorkspaceRootDialog,
   type WorkspaceDirectoryEntries,
 } from "./workspace-root-dialog";
+import { compactLargeContext, type ThreadManager } from "./thread-context";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -52,6 +53,9 @@ type RendererToMainMessage =
     };
 
 type MainToRendererMessage =
+  | { type: "bridge-ready" }
+  | { type: "bridge-reset"; reason: string }
+  | { type: "bridge-event"; sequence: number; message: MainToRendererMessage }
   | {
       type: "ipc-main-event";
       channel: string;
@@ -118,9 +122,12 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  recoverIpcSession?: () => Promise<void>;
+  prepareThreadPrompt?: (manager: ThreadManager, threadId: string) => Promise<void>;
   initialRoute?: string;
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
+  onSidebarOpenChanged?: (open: boolean) => void;
   onMemoryNavigationChanged?: (navigation: MemoryNavigationChange) => void;
   overrideAdapter?: {
     getGateOverride?: (
@@ -143,7 +150,17 @@ let socket: WebSocket | null = null;
 let reconnectTimeoutId: number | null = null;
 let heartbeatIntervalId: number | null = null;
 let lastPongAt = 0;
-let lastResumeReconnectAt = 0;
+let pingSentAt = 0;
+let bridgeReady = false;
+let recoveryBlocked = false;
+let checkingAuthentication = false;
+let authenticationExpired = false;
+let lastSequence = 0;
+const bridgeClientId = crypto.randomUUID();
+let hasOpenedIpcConnection = false;
+let reloadRequiredAfterReconnect = false;
+let connectionNotice: HTMLDivElement | null = null;
+let reloadRequested = false;
 const outboundQueue: RendererToMainMessage[] = [];
 const pendingInvokes = new Map<
   string,
@@ -161,32 +178,73 @@ const pendingDirectoryEntries = new Map<
 >();
 const rendererListeners = new Map<string, Set<IpcListener>>();
 const messagePorts = new Map<string, MessagePort>();
-const recentIpcEvents = new Map<string, number>();
-const IPC_DEDUP_WINDOW_MS = 3_000;
 
-function isDuplicateIpcEvent(channel: string, args: unknown[]): boolean {
-  // The desktop shell can emit the same bridge event through two window
-  // targets. Streaming text deltas are append-only, so delivering an exact
-  // duplicate corrupts only the in-progress text (and the final state later
-  // appears correct). Keep this client-local: it does not suppress distinct
-  // events for other signed-in users.
-  let fingerprint: string;
-  try {
-    fingerprint = `${channel}:${JSON.stringify(args)}`;
-  } catch {
-    return false;
+function showConnectionNotice(reconnected: boolean): void {
+  if (!document.body) {
+    window.setTimeout(() => showConnectionNotice(reconnected), 0);
+    return;
   }
-  const now = Date.now();
-  const previous = recentIpcEvents.get(fingerprint);
-  recentIpcEvents.set(fingerprint, now);
-  if (recentIpcEvents.size > 1_000) {
-    for (const [key, timestamp] of recentIpcEvents) {
-      if (now - timestamp > IPC_DEDUP_WINDOW_MS) {
-        recentIpcEvents.delete(key);
-      }
-    }
+  if (!connectionNotice) {
+    connectionNotice = document.createElement("div");
+    connectionNotice.setAttribute("role", "alert");
+    connectionNotice.style.cssText = [
+      "position:fixed",
+      "right:16px",
+      "bottom:16px",
+      "z-index:2147483647",
+      "max-width:420px",
+      "padding:14px 16px",
+      "border:1px solid rgba(255,255,255,.22)",
+      "border-radius:10px",
+      "background:#242424",
+      "color:#fff",
+      "box-shadow:0 8px 28px rgba(0,0,0,.35)",
+      "font:14px/1.4 system-ui,sans-serif",
+    ].join(";");
+    document.body.append(connectionNotice);
   }
-  return previous !== undefined && now - previous < IPC_DEDUP_WINDOW_MS;
+
+  connectionNotice.replaceChildren(
+    document.createTextNode(
+      reconnected
+        ? authenticationExpired
+          ? "Your sign-in session has expired. Sign in again to restore your thread."
+          : "Codex Web could not restore this session. Reload to retrieve the latest thread state. Your prompt will not be resent."
+        : "Connection to Codex Web was lost. Reconnecting…",
+    ),
+  );
+  if (reconnected) {
+    const reloadButton = document.createElement("button");
+    reloadButton.type = "button";
+    reloadButton.textContent = authenticationExpired ? "Sign in" : "Reload";
+    reloadButton.style.cssText = [
+      "margin-left:12px",
+      "padding:6px 10px",
+      "border:0",
+      "border-radius:6px",
+      "background:#fff",
+      "color:#111",
+      "font:inherit",
+      "font-weight:600",
+      "cursor:pointer",
+    ].join(";");
+    reloadButton.addEventListener("click", () => {
+      reloadRequested = true;
+      connectionNotice?.remove();
+      connectionNotice = null;
+      if (authenticationExpired) window.location.assign("/login");
+      else window.location.reload();
+    });
+    connectionNotice.append(" ", reloadButton);
+  }
+}
+
+function markIpcConnectionLost(): void {
+  if (!hasOpenedIpcConnection || reloadRequested) {
+    return;
+  }
+  reloadRequiredAfterReconnect = true;
+  showConnectionNotice(false);
 }
 
 function unimplemented(method: string): never {
@@ -206,15 +264,35 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
 }
 
 function handleIncomingMessage(message: MainToRendererMessage): void {
+  if (message.type === "bridge-event") {
+    if (message.sequence <= lastSequence) return;
+    if (message.sequence !== lastSequence + 1) {
+      requireRendererReload("IPC event sequence gap");
+      return;
+    }
+    handleIncomingMessage(message.message);
+    lastSequence = message.sequence;
+    return;
+  }
+  if (message.type === "bridge-reset") {
+    requireRendererReload(message.reason);
+    return;
+  }
+  if (message.type === "bridge-ready") {
+    bridgeReady = true;
+    const recovering = hasOpenedIpcConnection;
+    hasOpenedIpcConnection = true;
+    flushOutboundQueue();
+    if (recovering) void recoverRendererSession();
+    return;
+  }
   if (message.type === "bridge-pong") {
     lastPongAt = Date.now();
+    pingSentAt = 0;
     return;
   }
 
   if (message.type === "ipc-main-event") {
-    if (isDuplicateIpcEvent(message.channel, message.args)) {
-      return;
-    }
     emitRendererEvent(message.channel, message.args);
     return;
   }
@@ -260,7 +338,7 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
 }
 
 function flushOutboundQueue(): void {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!bridgeReady || recoveryBlocked || !socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
   const queued = outboundQueue.splice(0);
@@ -276,6 +354,40 @@ function flushOutboundQueue(): void {
       forceReconnect("send failed");
       return;
     }
+  }
+}
+
+function requireRendererReload(reason: string): void {
+  console.warn("[electron-stub] renderer recovery requires reload:", reason);
+  recoveryBlocked = true;
+  bridgeReady = false;
+  reloadRequiredAfterReconnect = true;
+  outboundQueue.length = 0;
+  closeMessagePorts();
+  rejectPendingRequests(`Session recovery failed: ${reason}. Reload required; do not resend the prompt until its status is restored.`);
+  showConnectionNotice(true);
+}
+
+async function recoverRendererSession(): Promise<void> {
+  const connection = socket;
+  let timeout: number | undefined;
+  try {
+    const recover = window.__ELECTRON_SHIM__?.recoverIpcSession;
+    if (!recover) throw new Error("Desktop recovery hook is not ready");
+    await Promise.race([
+      recover(),
+      new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(() => reject(new Error("Thread recovery timed out")), 30_000);
+      }),
+    ]);
+    if (socket !== connection || !bridgeReady || recoveryBlocked) return;
+    reloadRequiredAfterReconnect = false;
+    connectionNotice?.remove();
+    connectionNotice = null;
+  } catch (error) {
+    if (socket === connection) requireRendererReload(String(error));
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
   }
 }
 
@@ -313,12 +425,13 @@ function scheduleReconnect(delay = RECONNECT_DELAY_MS): void {
   }, delay);
 }
 
-function forceReconnect(reason: string, immediately = false): void {
+function forceReconnect(reason: string): void {
   const connection = socket;
   if (connection) {
     socket = null;
-    closeMessagePorts();
-    rejectPendingRequests(`IPC connection lost: ${reason}`);
+    bridgeReady = false;
+    pingSentAt = 0;
+    markIpcConnectionLost();
     if (
       connection.readyState === WebSocket.OPEN ||
       connection.readyState === WebSocket.CONNECTING
@@ -326,27 +439,36 @@ function forceReconnect(reason: string, immediately = false): void {
       connection.close(4000, reason.slice(0, 123));
     }
   }
-  if (immediately) {
-    if (reconnectTimeoutId !== null) {
-      window.clearTimeout(reconnectTimeoutId);
-      reconnectTimeoutId = null;
-    }
-    // A resumed mobile tab can throttle zero-delay timers for many seconds.
-    // Constructing WebSocket here starts the TCP/TLS handshake immediately.
-    ensureSocket();
-    return;
-  }
   scheduleReconnect(0);
 }
 
-function reconnectAfterResume(reason: string): void {
-  const now = Date.now();
-  if (now - lastResumeReconnectAt < 1_000) {
+async function checkAuthentication(): Promise<void> {
+  if (checkingAuthentication || recoveryBlocked || reloadRequested) return;
+  checkingAuthentication = true;
+  try {
+    const response = await fetch("/__backend/connection", { cache: "no-store", signal: AbortSignal.timeout(10_000) });
+    if (response.status === 401) {
+      authenticationExpired = true;
+      requireRendererReload("Sign-in session expired");
+    }
+  } catch { /* Network failures use the normal reconnect path. */ }
+  finally { checkingAuthentication = false; }
+}
+
+function reconnectAfterResume(): void {
+  const connection = socket;
+  if (!connection || connection.readyState === WebSocket.CLOSED) {
     ensureSocket();
     return;
   }
-  lastResumeReconnectAt = now;
-  forceReconnect(reason, true);
+
+  // Sleeping tabs do not owe us a pong. Give the resumed connection a fresh
+  // probe deadline instead of immediately treating its old timestamp as dead.
+  if (document.visibilityState === "visible") {
+    pingSentAt = 0;
+    lastPongAt = Date.now();
+    heartbeat();
+  }
 }
 
 function heartbeat(): void {
@@ -357,11 +479,12 @@ function heartbeat(): void {
     ensureSocket();
     return;
   }
-  if (Date.now() - lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+  if (pingSentAt && Date.now() - pingSentAt > HEARTBEAT_TIMEOUT_MS) {
     forceReconnect("heartbeat timed out");
     return;
   }
   try {
+    if (!pingSentAt) pingSentAt = Date.now();
     socket.send(JSON.stringify({ type: "bridge-ping", sentAt: Date.now() }));
   } catch (error) {
     console.warn("[electron-stub] IPC heartbeat failed", error);
@@ -377,6 +500,7 @@ function startHeartbeat(): void {
 }
 
 function ensureSocket(): void {
+  if (recoveryBlocked || reloadRequested) return;
   if (
     socket &&
     (socket.readyState === WebSocket.OPEN ||
@@ -386,7 +510,7 @@ function ensureSocket(): void {
   }
 
   const connection = new WebSocket(
-    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc`,
+    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc?clientId=${bridgeClientId}&after=${lastSequence}&resume=${hasOpenedIpcConnection ? 1 : 0}`,
   );
   socket = connection;
   connection.addEventListener("open", () => {
@@ -395,9 +519,11 @@ function ensureSocket(): void {
       return;
     }
     lastPongAt = Date.now();
-    flushOutboundQueue();
+    pingSentAt = 0;
+    // Wait for the server's replay/ready handshake before sending commands.
   });
   connection.addEventListener("message", (event) => {
+    if (socket !== connection || recoveryBlocked) return;
     try {
       const message = JSON.parse(String(event.data)) as MainToRendererMessage;
       handleIncomingMessage(message);
@@ -413,18 +539,22 @@ function ensureSocket(): void {
       return;
     }
     socket = null;
-    closeMessagePorts();
-    rejectPendingRequests("IPC connection closed. Please retry the action.");
+    bridgeReady = false;
+    pingSentAt = 0;
+    if (recoveryBlocked) return;
+    markIpcConnectionLost();
     scheduleReconnect();
   });
   connection.addEventListener("error", () => {
     if (socket === connection) {
+      void checkAuthentication();
       forceReconnect("socket error");
     }
   });
 }
 
 function enqueueMessage(message: RendererToMainMessage): void {
+  if (recoveryBlocked) throw new Error("Session recovery requires a reload");
   outboundQueue.push(message);
   ensureSocket();
   flushOutboundQueue();
@@ -509,6 +639,30 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+const preparingThreads = new Set<string>();
+electronShim.prepareThreadPrompt = async (manager, threadId) => {
+  if (reloadRequiredAfterReconnect || recoveryBlocked || !bridgeReady) throw new Error("Connection is recovering. Wait for thread status to be restored before sending.");
+  if (preparingThreads.has(threadId)) throw new Error("This thread is already preparing a prompt.");
+  preparingThreads.add(threadId);
+  let notice: HTMLDivElement | undefined;
+  try {
+    const response = await fetch(`/__backend/thread-context/${encodeURIComponent(threadId)}`, { signal: AbortSignal.timeout(15_000), cache: "no-store" });
+    if (!response.ok) throw new Error("Could not check thread context. Prompt was not sent.");
+    const context = await response.json();
+    if (context.available && context.imageBytes > 8 * 1024 * 1024) {
+      notice = document.createElement("div");
+      notice.setAttribute("role", "status");
+      notice.style.cssText = "position:fixed;bottom:20px;left:20px;right:20px;z-index:2147483646;padding:16px;background:#242424;color:white;border:1px solid #777;border-radius:10px;font:14px system-ui";
+      notice.textContent = "Large image history detected. Compacting context before sending your prompt…";
+      document.body.append(notice);
+      await compactLargeContext(manager, threadId);
+    }
+    if (reloadRequiredAfterReconnect || recoveryBlocked || !bridgeReady) throw new Error("Connection changed while preparing context. Prompt was not sent; check the thread before retrying.");
+  } finally {
+    notice?.remove();
+    preparingThreads.delete(threadId);
+  }
+};
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
 Object.assign(globalThis, {
@@ -523,6 +677,16 @@ Object.assign(globalThis, {
 
 electronShim.overrideAdapter = {
   getGateOverride(evaluation) {
+    if (evaluation.name === "2138468235") {
+      // MCP Apps trigger app/list discovery during shell startup. The
+      // discovery endpoint can be Cloudflare-rate-limited and hold the splash
+      // screen for 10+ seconds; Apps are not required for core threads.
+      return {
+        ...evaluation,
+        value: false,
+      };
+    }
+
     if (evaluation.name === "2911712394") {
       return {
         ...evaluation,
@@ -553,6 +717,140 @@ if (initialRoute.browserPath) {
 }
 
 electronShim.initialSidebarState = initialSidebarState;
+
+let mobileSidebarOpen = false;
+let mobileSidebarBackdrop: HTMLButtonElement | null = null;
+
+function getMobileSidebarBoundary(): number {
+  const persistedWidth = Number(window.localStorage.getItem("sidebar-width"));
+  const sidebarWidth = Number.isFinite(persistedWidth)
+    ? Math.min(Math.max(persistedWidth, 240), 520)
+    : 275;
+
+  // The resizeable sidebar is followed by the narrow navigation rail.
+  return Math.min(window.innerWidth, sidebarWidth + 32);
+}
+
+function updateMobileSidebarBackdrop(): void {
+  if (mobileSidebarBackdrop == null) {
+    return;
+  }
+
+  const visible = mobileMediaQuery.matches && mobileSidebarOpen;
+  mobileSidebarBackdrop.hidden = !visible;
+  if (visible) {
+    mobileSidebarBackdrop.style.left = `${getMobileSidebarBoundary()}px`;
+  }
+}
+
+function installMobileSidebarBackdrop(): void {
+  if (mobileSidebarBackdrop != null || !document.body) {
+    return;
+  }
+
+  const backdrop = document.createElement("button");
+  backdrop.type = "button";
+  backdrop.hidden = true;
+  backdrop.tabIndex = -1;
+  backdrop.setAttribute("aria-label", "Close sidebar");
+  Object.assign(backdrop.style, {
+    position: "fixed",
+    inset: "0 0 0 auto",
+    zIndex: "2147483000",
+    width: "auto",
+    border: "0",
+    margin: "0",
+    padding: "0",
+    background: "rgba(0, 0, 0, 0.36)",
+    cursor: "default",
+    touchAction: "manipulation",
+  });
+  backdrop.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    mobileSidebarOpen = false;
+    updateMobileSidebarBackdrop();
+    electronShim.closeSidebar?.();
+  });
+  document.body.append(backdrop);
+  mobileSidebarBackdrop = backdrop;
+  updateMobileSidebarBackdrop();
+}
+
+if (document.body) {
+  installMobileSidebarBackdrop();
+} else {
+  document.addEventListener("DOMContentLoaded", installMobileSidebarBackdrop, {
+    once: true,
+  });
+}
+
+mobileMediaQuery.addEventListener("change", () => {
+  if (!mobileMediaQuery.matches) {
+    mobileSidebarOpen = false;
+  }
+  updateMobileSidebarBackdrop();
+});
+
+window.addEventListener(
+  "resize",
+  () => {
+    updateMobileSidebarBackdrop();
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (
+      event.key !== "Escape" ||
+      !mobileMediaQuery.matches ||
+      !mobileSidebarOpen
+    ) {
+      return;
+    }
+
+    mobileSidebarOpen = false;
+    updateMobileSidebarBackdrop();
+    electronShim.closeSidebar?.();
+  },
+  true,
+);
+
+electronShim.onSidebarOpenChanged = (open) => {
+  mobileSidebarOpen = open;
+  updateMobileSidebarBackdrop();
+};
+
+function preferAdvancedModelPicker(): void {
+  for (const toggle of document.querySelectorAll<HTMLElement>(
+    '[data-model-picker-view-toggle][aria-expanded="false"]',
+  )) {
+    if (toggle.dataset.codexWebAdvancedPreferred === "true") {
+      continue;
+    }
+
+    toggle.dataset.codexWebAdvancedPreferred = "true";
+    requestAnimationFrame(() => {
+      if (
+        toggle.isConnected &&
+        toggle.getAttribute("aria-expanded") === "false"
+      ) {
+        toggle.click();
+      }
+    });
+  }
+}
+
+new MutationObserver(preferAdvancedModelPicker).observe(
+  document.documentElement,
+  {
+    childList: true,
+    subtree: true,
+  },
+);
+preferAdvancedModelPicker();
+
 electronShim.onMemoryNavigationChanged = (navigation) => {
   const path = navigation.location.pathname;
   if (
@@ -560,6 +858,8 @@ electronShim.onMemoryNavigationChanged = (navigation) => {
     mobileMediaQuery.matches &&
     shouldCloseSidebarForMemoryPath(path)
   ) {
+    mobileSidebarOpen = false;
+    updateMobileSidebarBackdrop();
     electronShim.closeSidebar?.();
   }
 
@@ -749,7 +1049,8 @@ ipcRenderer.on(
   "codex-web:select-workspace-folder",
   (_event, value: unknown) => {
     const requestId =
-      typeof value === "object" && value !== null &&
+      typeof value === "object" &&
+      value !== null &&
       typeof (value as { requestId?: unknown }).requestId === "string"
         ? (value as { requestId: string }).requestId
         : null;
@@ -768,23 +1069,40 @@ ipcRenderer.on(
 );
 
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") pingSentAt = 0;
   if (document.visibilityState === "visible") {
-    // Mobile browsers commonly retain a dead WebSocket as OPEN after a
-    // background/foreground cycle. Recreate the bridge when the page resumes.
-    reconnectAfterResume("page resumed");
+    // Ensure a bridge exists when a suspended page resumes. Keep a healthy
+    // socket intact so active MessagePorts and threads are not interrupted.
+    reconnectAfterResume();
   }
 });
 
+// Prevent additional submissions while the active turn's state is uncertain.
+// Recovery's internal RPCs still pass through the bridge normally.
+for (const type of ["click", "keydown", "submit"] as const) {
+  document.addEventListener(type, (event) => {
+    if (!reloadRequiredAfterReconnect || connectionNotice?.contains(event.target as Node)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+}
+
 window.addEventListener("pageshow", () => {
-  reconnectAfterResume("page restored");
+  reconnectAfterResume();
 });
 
 window.addEventListener("focus", () => {
-  reconnectAfterResume("window focused");
+  reconnectAfterResume();
 });
 
 window.addEventListener("online", () => {
-  reconnectAfterResume("network restored");
+  reconnectAfterResume();
+});
+
+window.addEventListener("beforeunload", () => {
+  // Closing the old page also closes its WebSocket. Do not turn that expected
+  // shutdown into a reconnect warning while a navigation/reload is underway.
+  reloadRequested = true;
 });
 
 ensureSocket();

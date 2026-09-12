@@ -20,6 +20,19 @@
        [i],
 --- a/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~remote-conversation-~gjotggjg--gGzOgo3.js
 +++ b/webview/assets/app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~remote-conversation-~gjotggjg--gGzOgo3.js
+@@ -183,3 +183,5 @@
+ function Be(e, t) {
+-  return t === `full` ? Math.max(320, e) : Math.max(320, e - qe);
++  return t === `full` || window.matchMedia(`(max-width: 768px)`).matches
++    ? Math.max(320, e)
++    : Math.max(320, e - qe);
+ }
+@@ -360,4 +362,5 @@
+ }
+ function Gt(e, t, n = {}) {
++  window.__ELECTRON_SHIM__.onSidebarOpenChanged?.(t);
+   (!t && e.get(cn) && e.set(ln, !0),
+     e.set(on, t),
 @@ -467,7 +467,7 @@
        Wt(),
        (rn = `app-shell-bottom-panel-launcher-visible`),

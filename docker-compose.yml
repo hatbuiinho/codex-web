@@ -1,6 +1,7 @@
 services:
   codex-web:
     image: codex-web:${CODEX_WEB_TAG:-local}
+    mem_limit: 5120m
     build:
       context: .
       dockerfile: Dockerfile

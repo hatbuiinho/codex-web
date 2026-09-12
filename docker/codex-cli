@@ -18,4 +18,9 @@ esac
 
 exec /usr/local/bin/codex \
   -c "sandbox_mode = \"${CODEX_WEB_SANDBOX_MODE:-danger-full-access}\"" \
+  -c 'model_provider="openai-http"' \
+  -c 'model_providers.openai-http.name="OpenAI HTTP"' \
+  -c 'model_providers.openai-http.wire_api="responses"' \
+  -c 'model_providers.openai-http.requires_openai_auth=true' \
+  -c 'model_providers.openai-http.supports_websockets=false' \
   "$@"

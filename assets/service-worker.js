@@ -1,6 +1,6 @@
 /* global self, caches, fetch */
 
-const CACHE_NAME = "codex-web-static-v2";
+const CACHE_NAME = "codex-web-static-v4";
 const STATIC_PATH = /^\/(?:assets\/|favicon\.svg$|manifest\.json$)/;
 
 self.addEventListener("install", () => {
@@ -31,7 +31,10 @@ self.addEventListener("fetch", (event) => {
   if (
     request.method !== "GET" ||
     url.origin !== self.location.origin ||
-    !STATIC_PATH.test(url.pathname)
+    !STATIC_PATH.test(url.pathname) ||
+    // preload.js is the mutable IPC bridge entrypoint. Never serve an older
+    // copy from the PWA cache after the server has been rebuilt.
+    url.pathname === "/assets/preload.js"
   ) {
     return;
   }
