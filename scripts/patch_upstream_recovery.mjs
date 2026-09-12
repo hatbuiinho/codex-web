@@ -4,14 +4,21 @@ import { createHash } from "node:crypto";
 
 export function patchRecovery(source) {
   const anchor = "  async function l(t, n) {\n    let r = o?.roots,";
+  const resumeAnchor =
+    '        "maybe-resume-conversation": F9(async (e, t) => {\n          (e.activateThreadSummary(t.conversationId), await Oi(e, t));';
   if (source.includes("codex-web:official-thread-recovery")) return source;
   if (source.split(anchor).length !== 2)
     throw new Error(
       "Desktop recovery hook changed; inspect upstream Y4e before upgrading",
     );
-  return source.replace(
-    anchor,
-    `  // codex-web:official-thread-recovery
+  if (source.split(resumeAnchor).length !== 2)
+    throw new Error(
+      "Desktop archived-thread resume hook changed; inspect upstream before upgrading",
+    );
+  return source
+    .replace(
+      anchor,
+      `  // codex-web:official-thread-recovery
   (0, P7.useEffect)(() => {
     const shim = window.__ELECTRON_SHIM__;
     if (!shim) return;
@@ -28,7 +35,19 @@ export function patchRecovery(source) {
     return () => { if (shim.recoverIpcSession === recover) delete shim.recoverIpcSession; };
   }, [e, t, n, i, a, o?.roots]);
 ${anchor}`,
-  );
+    )
+    .replace(
+      resumeAnchor,
+      `        "maybe-resume-conversation": F9(async (e, t) => {
+          e.activateThreadSummary(t.conversationId);
+          try {
+            await Oi(e, t);
+          } catch (error) {
+            if (!String(error).toLowerCase().includes("archived")) throw error;
+            await e.sendRequest("thread/unarchive", { threadId: t.conversationId });
+            await Oi(e, t);
+          }`,
+    );
 }
 
 export function patchContextGuard(source) {

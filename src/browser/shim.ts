@@ -640,26 +640,74 @@ const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
 const preparingThreads = new Set<string>();
+let activeContextToast: HTMLDivElement | null = null;
+
+function showContextToast(message: string, durationMs = 4_000): () => void {
+  activeContextToast?.remove();
+  const toast = document.createElement("div");
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  toast.style.cssText = [
+    "position:fixed",
+    "top:max(16px, env(safe-area-inset-top))",
+    "right:16px",
+    "z-index:2147483646",
+    "width:min(360px, calc(100vw - 32px))",
+    "box-sizing:border-box",
+    "display:flex",
+    "align-items:flex-start",
+    "gap:12px",
+    "padding:12px 12px 12px 14px",
+    "background:rgba(36,36,36,.96)",
+    "color:#fff",
+    "border:1px solid rgba(255,255,255,.28)",
+    "border-radius:12px",
+    "box-shadow:0 8px 30px rgba(0,0,0,.28)",
+    "font:14px/1.4 system-ui,sans-serif",
+    "pointer-events:auto",
+  ].join(";");
+  const text = document.createElement("span");
+  text.textContent = message;
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.setAttribute("aria-label", "Dismiss notification");
+  dismiss.textContent = "×";
+  dismiss.style.cssText =
+    "margin:-3px -4px 0 auto;padding:0 4px;border:0;background:transparent;color:rgba(255,255,255,.72);font:22px/1 system-ui,sans-serif;cursor:pointer";
+  toast.append(text, dismiss);
+  document.body.append(toast);
+  activeContextToast = toast;
+  let dismissed = false;
+  const dismissToast = () => {
+    if (dismissed) return;
+    dismissed = true;
+    window.clearTimeout(timer);
+    toast.remove();
+    if (activeContextToast === toast) activeContextToast = null;
+  };
+  const timer = window.setTimeout(dismissToast, durationMs);
+  dismiss.addEventListener("click", dismissToast);
+  return dismissToast;
+}
+
 electronShim.prepareThreadPrompt = async (manager, threadId) => {
   if (reloadRequiredAfterReconnect || recoveryBlocked || !bridgeReady) throw new Error("Connection is recovering. Wait for thread status to be restored before sending.");
   if (preparingThreads.has(threadId)) throw new Error("This thread is already preparing a prompt.");
   preparingThreads.add(threadId);
-  let notice: HTMLDivElement | undefined;
+  let dismissToast: (() => void) | undefined;
   try {
     const response = await fetch(`/__backend/thread-context/${encodeURIComponent(threadId)}`, { signal: AbortSignal.timeout(15_000), cache: "no-store" });
     if (!response.ok) throw new Error("Could not check thread context. Prompt was not sent.");
     const context = await response.json();
     if (context.available && context.imageBytes > 8 * 1024 * 1024) {
-      notice = document.createElement("div");
-      notice.setAttribute("role", "status");
-      notice.style.cssText = "position:fixed;bottom:20px;left:20px;right:20px;z-index:2147483646;padding:16px;background:#242424;color:white;border:1px solid #777;border-radius:10px;font:14px system-ui";
-      notice.textContent = "Large image history detected. Compacting context before sending your prompt…";
-      document.body.append(notice);
+      dismissToast = showContextToast(
+        "Large image history detected. Compacting context before sending your prompt…",
+      );
       await compactLargeContext(manager, threadId);
     }
     if (reloadRequiredAfterReconnect || recoveryBlocked || !bridgeReady) throw new Error("Connection changed while preparing context. Prompt was not sent; check the thread before retrying.");
   } finally {
-    notice?.remove();
+    dismissToast?.();
     preparingThreads.delete(threadId);
   }
 };

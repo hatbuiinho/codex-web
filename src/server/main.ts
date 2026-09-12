@@ -449,6 +449,8 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const deviceLoginJobs = new Map<string, DeviceLoginJob>();
   const failedLogins = new Map<string, { attempts: number; resetAt: number }>();
   let activeDeviceLoginJob: DeviceLoginJob | null = null;
+  let observedCodexAccountId: string | null | undefined;
+  let authRefreshPromise: Promise<void> | null = null;
 
   const bodyObject = (body: unknown): Record<string, unknown> =>
     body && typeof body === "object" ? (body as Record<string, unknown>) : {};
@@ -478,6 +480,65 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       child.on("error", (error) => resolve({ code: null, output: error.message }));
       child.on("close", (code) => resolve({ code, output: stripAnsi(output) }));
     });
+
+  const readCodexAccountId = async (): Promise<string | null> => {
+    try {
+      const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+      const parsed: unknown = JSON.parse(await fs.readFile(path.join(codexHome, "auth.json"), "utf8"));
+      const tokens = parsed && typeof parsed === "object" && "tokens" in parsed && parsed.tokens && typeof parsed.tokens === "object"
+        ? (parsed.tokens as Record<string, unknown>)
+        : null;
+      const accountId = tokens?.account_id ?? tokens?.accountId;
+      return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const restartLocalAppServerAfterAuth = async (): Promise<void> => {
+    const invoke = bridgeState.handleRendererInvoke;
+    if (!invoke) {
+      throw new Error("Desktop app-server bridge is not ready; reload Codex Web after Device Auth");
+    }
+    // This is the same message used by the official Desktop UI when the
+    // connection status offers “Restart now”. It replaces the in-memory
+    // app-server process so it reads the newly written auth.json.
+    await invoke("codex_desktop:message-from-view", [
+      {
+        type: "codex-app-server-restart",
+        hostId: "local",
+        errorMessage: null,
+      },
+    ]);
+  };
+
+  const refreshLocalAppServerForAuthChange = (): Promise<void> => {
+    if (authRefreshPromise) return authRefreshPromise;
+    authRefreshPromise = restartLocalAppServerAfterAuth().finally(() => {
+      authRefreshPromise = null;
+    });
+    return authRefreshPromise;
+  };
+
+  const startCodexAuthWatcher = async (): Promise<void> => {
+    observedCodexAccountId = await readCodexAccountId();
+    const timer = setInterval(() => {
+      void (async () => {
+        const currentAccountId = await readCodexAccountId();
+        if (currentAccountId === observedCodexAccountId) return;
+        // Keep the old identity until restart succeeds. This retries a
+        // transient startup race instead of leaving the app on stale auth.
+        try {
+          await refreshLocalAppServerForAuthChange();
+          observedCodexAccountId = currentAccountId;
+          console.log("[auth] refreshed local app-server after account change");
+        } catch (error) {
+          console.warn("[auth] account changed but app-server refresh failed", errorMessage(error));
+        }
+      })();
+    }, 2_000);
+    timer.unref();
+  };
 
   // The admin UI sends an empty JSON POST for actions that only need the
   // session and CSRF token (for example, starting Device Auth). Fastify's
@@ -689,12 +750,24 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
         auth.audit(session.userId, "codex_account.device_auth_failed", error.message);
       });
       child.on("close", (code) => {
-        job.state = code === 0 ? "succeeded" : "failed";
-        auth.audit(
-          session.userId,
-          job.state === "succeeded" ? "codex_account.device_auth_succeeded" : "codex_account.device_auth_failed",
-          `exit=${code ?? "unknown"}`,
-        );
+        void (async () => {
+          if (code !== 0) {
+            job.state = "failed";
+            auth.audit(session.userId, "codex_account.device_auth_failed", `exit=${code ?? "unknown"}`);
+            return;
+          }
+          try {
+            job.output = `${job.output}\nRefreshing the local Codex session…\n`;
+            await refreshLocalAppServerForAuthChange();
+            observedCodexAccountId = await readCodexAccountId();
+            job.state = "succeeded";
+            auth.audit(session.userId, "codex_account.device_auth_succeeded", "auth.json refreshed and local app-server restarted");
+          } catch (error) {
+            job.output = `${job.output}\nDevice Auth completed, but the local Codex session could not be refreshed: ${errorMessage(error)}\n`;
+            job.state = "failed";
+            auth.audit(session.userId, "codex_account.device_auth_refresh_failed", errorMessage(error));
+          }
+        })();
       });
       return reply.code(202).send({ id: job.id });
     } catch (error) {
@@ -1097,7 +1170,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   }
 
   const module = require(matches[0]!);
-  module.runMainAppStartup();
+  void Promise.resolve(module.runMainAppStartup()).then(() => startCodexAuthWatcher());
 }
 
 async function main(args: string[]) {

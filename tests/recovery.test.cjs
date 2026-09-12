@@ -207,8 +207,12 @@ test("upstream patches fail closed on drift and are idempotent", async () => {
     await import("../scripts/patch_upstream_recovery.mjs");
   for (const patch of [patchRecovery, patchContextGuard])
     assert.throws(() => patch("changed upstream"));
-  const source = "  async function l(t, n) {\n    let r = o?.roots,";
+  const source =
+    "  async function l(t, n) {\n    let r = o?.roots,\n" +
+    '        "maybe-resume-conversation": F9(async (e, t) => {\n' +
+    "          (e.activateThreadSummary(t.conversationId), await Oi(e, t));";
   assert.equal(patchRecovery(patchRecovery(source)), patchRecovery(source));
+  assert.match(patchRecovery(source), /thread\/unarchive/);
   const turnSource =
     "  let Ae = {\n      threadId: t,\n      ...s,\n        modelProvider: P.modelProvider,";
   const patched = patchContextGuard(turnSource);

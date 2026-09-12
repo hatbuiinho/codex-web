@@ -94,7 +94,11 @@ CODEX_WEB_PUBLIC_ORIGIN="https://codex.example.com"
 Sign in at `/login`. An `account_admin` can open `/admin` to add users and
 change the single shared ChatGPT account with Device Auth. Account changes are
 blocked while browser clients are connected, and each change is recorded in the
-local auth database. The database path defaults to
+local auth database. After Device Auth completes, the local Codex app-server is
+restarted so it reloads the new `auth.json` credentials. If credentials are
+changed externally (for example, after logging out in Codex and running Device
+Auth inside the container), the server watches the account ID and performs the
+same refresh automatically. The database path defaults to
 `/var/lib/codex-web/auth.db`; persist that directory in Docker.
 
 Application auth controls the web UI and its API. It does not make the shared
