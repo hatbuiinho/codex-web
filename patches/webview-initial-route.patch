@@ -51,3 +51,13 @@
        (fn = g(H, zt)),
        (pn = v(rn, !0)),
        (mn = g(G, !1)),
+--- a/webview/assets/app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-BfuFOm2j.js
++++ b/webview/assets/app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-BfuFOm2j.js
+@@ -94300,4 +94300,6 @@
+       t === `bottom`
+         ? (o != null && e.set(Cae, o), Zie(e, !0), zp(e, `bottom-panel`))
+-        : (Sae(e, !0), zp(e, `right-panel`)),
++        : (window.matchMedia(`(max-width: 768px)`).matches && e.set(Rp, !0),
++          Sae(e, !0),
++          zp(e, `right-panel`)),
+       !0);

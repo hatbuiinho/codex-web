@@ -94,6 +94,15 @@ if (
     fs.writeFileSync(target, source);
     version.update(source);
   }
+  // These bundles contain the mobile shell and right-panel open behavior
+  // patched earlier by prepare_asar. Include both so existing PWAs do not
+  // retain a stale split panel.
+  for (const filename of [
+    "app-initial~app-main~hotkey-window-thread-page~thread-app-shell-chrome~remote-conversation-~gjotggjg--gGzOgo3.js",
+    "app-initial~app-main~onboarding-page~hotkey-window-thread-page~quick-chat-window-page~chatg~k0ede4gb-BfuFOm2j.js",
+  ]) {
+    version.update(fs.readFileSync(path.join(directory, filename), "utf8"));
+  }
   // Upstream hashed filenames do not change when we patch their contents.
   // Derive a cache generation so the PWA cannot retain a previous recovery hook.
   const serviceWorker = path.join(directory, "..", "service-worker.js");
