@@ -16,7 +16,11 @@ export async function compactLargeContext(
     threadId,
     includeTurns: false,
   });
-  if (thread.status?.type !== "idle")
+  // `systemError` is terminal too: app-server uses it after failures such as
+  // model capacity errors and clears the running flag before publishing it.
+  // `notLoaded` is also safe because thread/compact/start loads the thread.
+  // Only an actually active runtime must block compaction.
+  if (thread.status?.type === "active")
     throw new Error(
       "Wait for the active turn to finish before compacting image context.",
     );

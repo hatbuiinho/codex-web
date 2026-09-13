@@ -172,6 +172,25 @@ test("active turn is never compacted by preflight", async () => {
   await assert.rejects(compactLargeContext(fake, "thread"), /active turn/);
   assert.equal(fake.calls, 0);
 });
+for (const terminalStatus of ["systemError", "notLoaded"]) {
+  test(`preflight compacts after terminal ${terminalStatus} status`, async () => {
+    const fake = manager(terminalStatus);
+    const result = compactLargeContext(fake, "thread", 1000);
+    await tick();
+    assert.equal(fake.calls, 1);
+    fake.emit("item/started", {
+      threadId: "thread",
+      turnId: "compact",
+      item: { type: "contextCompaction" },
+    });
+    fake.emit("turn/completed", {
+      threadId: "thread",
+      turn: { id: "compact", status: "completed" },
+    });
+    await result;
+    assert.equal(fake.removed, true);
+  });
+}
 test("failed compaction rejects prompt preparation and removes listener", async () => {
   const fake = manager();
   const result = compactLargeContext(fake, "thread", 1000);
